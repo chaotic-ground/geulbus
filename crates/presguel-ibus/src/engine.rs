@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use presguel_core::expr::{Ctx, Expr, Value as ExprValue};
-use presguel_core::{Config, Engine as Core};
+use presguel_core::{us_qwerty_ascii, Config, Engine as Core};
 use zbus::object_server::SignalEmitter;
 use zbus::{fdo, interface};
 use zbus::zvariant::Value;
@@ -28,6 +28,14 @@ const SPECIAL_MODS: u32 = CONTROL_MASK | MOD1_MASK | SUPER_MASK | META_MASK;
 // 키심(keysym).
 const KEY_BACKSPACE: u32 = 0xff08;
 const KEY_HANGUL: u32 = 0xff31;
+
+/// `PRESGUEL_DEBUG_KEYS` 환경변수가 켜져 있으면 키 이벤트를 stderr 로 로깅한다.
+fn debug_keys_enabled() -> bool {
+    matches!(
+        std::env::var("PRESGUEL_DEBUG_KEYS").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
 
 /// 수식어 키 자체(Shift/Ctrl/Caps/Meta/Alt/Super/Hyper, ISO_Level shifts, Mode_switch)인가.
 /// 이런 키는 텍스트가 아니므로 조합에 영향을 주지 않고 그대로 통과시켜야 한다.
@@ -99,11 +107,8 @@ pub struct IBusEngine {
     settings: Settings,
     /// 간단 모드에서 쓸 한글 항목 인덱스(settings 에서 파생, 항목 수로 클램프).
     hangul_idx: usize,
-    /// 간단 모드에서 쓸 영문 배치 항목 인덱스(단축키 변환 기준).
+    /// 간단 모드에서 한/영 토글의 상대 항목 인덱스.
     latin_idx: usize,
-    /// 단축키 조합을 변환할 영문 배치 KeyTable(간단 모드에서만 Some). 입력 ASCII →
-    /// 영문 배치 글자. XKB 가 us 라 입력 keyval 은 QWERTY 위치, 이 표가 그걸 드보락 등으로 바꾼다.
-    shortcut_layout: Option<HashMap<u32, Expr>>,
 }
 
 impl IBusEngine {
@@ -160,26 +165,9 @@ impl IBusEngine {
             settings: Settings::default(), // apply_settings 가 곧 덮어쓴다
             hangul_idx: 0,
             latin_idx: 0,
-            shortcut_layout: None,
         };
         engine.apply_settings(st);
         engine
-    }
-
-    /// 간단 모드일 때 단축키 변환에 쓸 영문 배치 KeyTable 을 항목에서 뽑는다.
-    fn derive_shortcut_layout(
-        entries: &[Mode],
-        simple: bool,
-        latin_idx: usize,
-    ) -> Option<HashMap<u32, Expr>> {
-        if !simple {
-            return None;
-        }
-        match entries.get(latin_idx) {
-            Some(Mode::Latin { keys }) => Some(keys.clone()),
-            // 영문 항목이 한글 조합이면 단축키 변환은 비활성(드물게).
-            _ => None,
-        }
     }
 
     /// 사용자 설정을 반영한다(파생 필드와 현재 항목 보정). 항상 적용한다.
@@ -190,7 +178,6 @@ impl IBusEngine {
         let latin_idx = st.latin_entry.min(last);
         self.hangul_idx = hangul_idx;
         self.latin_idx = latin_idx;
-        self.shortcut_layout = Self::derive_shortcut_layout(&self.entries, st.simple_mode, latin_idx);
         if st.simple_mode {
             // 간단 모드 진입/항목 변경 시 현재 항목을 {한글, 영문} 안으로 보정.
             if !was_simple || (self.current != hangul_idx && self.current != latin_idx) {
@@ -231,24 +218,6 @@ impl IBusEngine {
             })
             .map(|t| t.clamp(0, len - 1) as usize)
             .unwrap_or(self.current)
-    }
-
-    /// 단축키(Ctrl/Alt/Super+키) 조합을 영문 배치로 변환한 keysym 을 돌려준다.
-    /// 간단 모드에서만 동작. 변환 결과가 입력과 같으면 None(그대로 응용에 넘김).
-    fn remap_shortcut(&self, keyval: u32, state: u32) -> Option<u32> {
-        let keys = self.shortcut_layout.as_ref()?;
-        if !(0x20..=0x7e).contains(&keyval) {
-            return None;
-        }
-        let expr = keys.get(&keyval)?;
-        let shift = (state & SHIFT_MASK != 0) as i64;
-        match expr.eval(&Ctx { p: shift, ..Default::default() }) {
-            Ok(ExprValue::Int(n)) => {
-                let m = u32::try_from(n).ok()?;
-                (m != keyval).then_some(m)
-            }
-            _ => None,
-        }
     }
 
     fn cur(&self) -> &Mode {
@@ -300,7 +269,11 @@ impl IBusEngine {
 
     /// 키 이벤트를 분류한다(순수 함수). `process_key_event` 가 이 결과로 분기한다.
     /// IME_SWITCH 는 release/수식어보다 먼저 본다 — CapsLock 은 수식어 키심이기도 하므로.
-    fn classify(&self, keyval: u32, state: u32) -> KeyClass {
+    ///
+    /// 인쇄 가능 키는 **물리 위치(keycode)** 를 US-QWERTY ASCII 로 환산해 KeyTable 을
+    /// 조회한다(날개셋 모델). 그러면 사용자 XKB 가 드보락이어도 세벌식 자리가 고정된다.
+    /// keycode 가 없거나(프로그램 주입) 매핑 밖이면 keyval 로 폴백한다.
+    fn classify(&self, keyval: u32, keycode: u32, state: u32) -> KeyClass {
         if self.ime_switch.contains_key(&keyval) {
             return KeyClass::ImeSwitch;
         }
@@ -316,8 +289,12 @@ impl IBusEngine {
         if keyval == KEY_BACKSPACE {
             return KeyClass::Backspace;
         }
+        let shift = state & SHIFT_MASK != 0;
+        if let Some(ascii) = us_qwerty_ascii(keycode, shift) {
+            return KeyClass::Printable(ascii);
+        }
         if (0x20..=0x7e).contains(&keyval) {
-            return KeyClass::Printable(keyval as u8);
+            return KeyClass::Printable(keyval as u8); // keycode 없음 → keyval 폴백
         }
         KeyClass::FunctionKey
     }
@@ -332,7 +309,15 @@ impl IBusEngine {
         keycode: u32,
         state: u32,
     ) -> fdo::Result<bool> {
-        let class = self.classify(keyval, state);
+        // 진단: PRESGUEL_DEBUG_KEYS=1 이면 받은 keyval/keycode/state 를 stderr 로 찍는다.
+        // presguel 활성 시 어떤 XKB 레이아웃 기준 keysym 이 오는지 확인용(드보락 vs us).
+        if debug_keys_enabled() {
+            let ch = char::from_u32(keyval).filter(|c| !c.is_control()).unwrap_or(' ');
+            eprintln!(
+                "presguel keyev: keyval=0x{keyval:04x} ({ch:?})  keycode=0x{keycode:x} ({keycode})  state=0x{state:x}"
+            );
+        }
+        let class = self.classify(keyval, keycode, state);
         let release = state & RELEASE_MASK != 0;
         match class {
             // IME_SWITCH(한/영·CapsLock 등): 눌림/뗌 모두 소비, 눌림에서 전환식을 평가.
@@ -350,16 +335,12 @@ impl IBusEngine {
             }
             // 뗌·수식어 키 자체: 조합에 영향 없이 통과.
             KeyClass::Release | KeyClass::Modifier => Ok(false),
-            // Ctrl/Alt/Super/Meta 조합(단축키): 조합 확정 후 응용에 넘김.
-            // 간단 모드면 영문 배치로 keysym 을 변환해 ForwardKeyEvent(예: QWERTY Alt+P → 드보락).
+            // Ctrl/Alt/Super/Meta 조합(단축키): 조합만 확정하고 응용에 넘긴다.
+            // 단축키 레이아웃은 IME 가 아니라 XKB(사용자 레이아웃)의 몫 — Wayland 에서
+            // IME 의 ForwardKeyEvent 로 키 위치를 바꾸는 건 불가하므로 흉내 내지 않는다.
+            // 사용자가 드보락 단축키를 원하면 자신의 키보드 레이아웃을 드보락으로 둔다.
             KeyClass::ShortcutCombo => {
                 self.flush_current(&se).await;
-                if !release {
-                    if let Some(remapped) = self.remap_shortcut(keyval, state) {
-                        let _ = Self::forward_key_event(&se, remapped, keycode, state).await;
-                        return Ok(true);
-                    }
-                }
                 Ok(false)
             }
             // 나머지는 현재 항목의 방식에 따라 처리.
@@ -469,14 +450,6 @@ impl IBusEngine {
         mode: u32,
     ) -> zbus::Result<()>;
 
-    #[zbus(signal)]
-    async fn forward_key_event(
-        se: &SignalEmitter<'_>,
-        keyval: u32,
-        keycode: u32,
-        state: u32,
-    ) -> zbus::Result<()>;
-
     /// 패널에 속성(입력 모드 표시기) 목록을 등록.
     #[zbus(signal)]
     async fn register_properties(se: &SignalEmitter<'_>, props: Value<'_>) -> zbus::Result<()>;
@@ -524,32 +497,26 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_remap_via_latin_layout() {
-        // 영문 배치(드보락 흉내): QWERTY 'p'(0x70) → 'l'(0x6c), Shift 면 'L'(0x4c).
-        let mut e = engine();
-        let mut keys = HashMap::new();
-        keys.insert(0x70u32, Expr::parse("108^(P&1)<<5").unwrap());
-        e.shortcut_layout = Some(keys);
-
-        assert_eq!(e.remap_shortcut(0x70, 0), Some(0x6c)); // Alt+p → Alt+l
-        assert_eq!(e.remap_shortcut(0x70, SHIFT_MASK), Some(0x4c)); // Alt+Shift+p → L
-        assert_eq!(e.remap_shortcut(0x71, 0), None); // 매핑 없는 키
-        // 영문 배치 미설정(전체 모드)이면 변환 안 함.
-        e.shortcut_layout = None;
-        assert_eq!(e.remap_shortcut(0x70, 0), None);
+    fn classify_uses_keycode_not_keyval() {
+        // 핵심: 인쇄 키는 keycode(물리 위치)로 분류한다. keyval 이 드보락이어도(예: 'p'=0x70)
+        // keycode 19(물리 R)면 US-QWERTY 'r' 로 본다 → 세벌식 자리 고정.
+        let e = engine();
+        // keyval=0x70('p', 드보락), keycode=19(물리 R), modifier 없음 → Printable('r')
+        assert_eq!(e.classify(0x70, 19, 0), KeyClass::Printable(b'r'));
+        // Shift+물리2(keycode 3) → '@' (세벌식 shifted 자모 인덱스)
+        assert_eq!(e.classify(0x32, 3, SHIFT_MASK), KeyClass::Printable(b'@'));
+        // keycode 0(프로그램 주입) → keyval 폴백
+        assert_eq!(e.classify(b'k' as u32, 0, 0), KeyClass::Printable(b'k'));
     }
 
     #[test]
     fn default_settings_is_full_mode() {
         let e = engine();
         assert!(!e.settings.simple_mode);
-        assert!(e.shortcut_layout.is_none()); // 전체 모드 → 단축키 변환 없음
     }
 
     #[test]
-    fn apply_simple_mode_sets_shortcut_layout_and_current() {
-        // MINI 에는 항목이 하나뿐이라 latin_idx 가 한글 항목으로 클램프됨 → shortcut_layout None.
-        // 그래도 current 보정과 settings 반영은 확인할 수 있다.
+    fn apply_simple_mode_sets_current() {
         let cfg = Config::parse(MINI).unwrap();
         let st = Settings { simple_mode: true, hangul_entry: 0, latin_entry: 0 };
         let e = IBusEngine::with_settings(&cfg, st);
@@ -598,40 +565,41 @@ mod tests {
     fn shift_is_modifier_not_function_key() {
         let e = engine();
         // 버그 재현 방지: Shift 는 Modifier(통과)여야지, FunctionKey(조합 확정)면 안 된다.
-        assert_eq!(e.classify(0xffe1, 0), KeyClass::Modifier); // Shift_L
-        assert_eq!(e.classify(0xffe2, 0), KeyClass::Modifier); // Shift_R
+        assert_eq!(e.classify(0xffe1, 0, 0), KeyClass::Modifier); // Shift_L
+        assert_eq!(e.classify(0xffe2, 0, 0), KeyClass::Modifier); // Shift_R
     }
 
     #[test]
     fn capslock_classifies_as_ime_switch_even_on_release() {
         let e = engine();
-        assert_eq!(e.classify(0xffe5, 0), KeyClass::ImeSwitch);
-        assert_eq!(e.classify(0xffe5, RELEASE_MASK), KeyClass::ImeSwitch);
+        assert_eq!(e.classify(0xffe5, 0, 0), KeyClass::ImeSwitch);
+        assert_eq!(e.classify(0xffe5, 0, RELEASE_MASK), KeyClass::ImeSwitch);
     }
 
     #[test]
     fn hangul_key_is_ime_switch() {
-        assert_eq!(engine().classify(0xff31, 0), KeyClass::ImeSwitch);
+        assert_eq!(engine().classify(0xff31, 0, 0), KeyClass::ImeSwitch);
     }
 
     #[test]
     fn at_key_with_shift_is_printable() {
-        // 실키 Shift+2 는 keyval 0x40('@') + SHIFT 상태로 도착 → 인쇄키로 분류되어 ㄺ 조합 가능.
-        assert_eq!(engine().classify(0x40, 1 /*SHIFT*/), KeyClass::Printable(0x40));
+        // 실키 Shift+물리2(keycode 3) → US-QWERTY '@' 로 분류 → 세벌식 ㄺ 조합 가능.
+        assert_eq!(engine().classify(0x40, 3, SHIFT_MASK), KeyClass::Printable(b'@'));
     }
 
     #[test]
     fn ctrl_combo_is_shortcut() {
-        assert_eq!(engine().classify(b'c' as u32, CONTROL_MASK), KeyClass::ShortcutCombo);
+        // Ctrl+물리C(keycode 46) → 단축키(통과). keycode 있어도 ShortcutCombo 가 우선.
+        assert_eq!(engine().classify(b'c' as u32, 46, CONTROL_MASK), KeyClass::ShortcutCombo);
     }
 
     #[test]
     fn release_of_normal_key_ignored() {
-        assert_eq!(engine().classify(b'k' as u32, RELEASE_MASK), KeyClass::Release);
+        assert_eq!(engine().classify(b'k' as u32, 37, RELEASE_MASK), KeyClass::Release);
     }
 
     #[test]
     fn backspace_classified() {
-        assert_eq!(engine().classify(KEY_BACKSPACE, 0), KeyClass::Backspace);
+        assert_eq!(engine().classify(KEY_BACKSPACE, 14, 0), KeyClass::Backspace);
     }
 }

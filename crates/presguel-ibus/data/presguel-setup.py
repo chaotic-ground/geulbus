@@ -123,8 +123,8 @@ class SetupWindow(Adw.ApplicationWindow):
 
         group = Adw.PreferencesGroup(
             title="입력 동작",
-            description="끄면 모든 입력 항목을 읽어 날개셋과 똑같이 동작합니다. "
-            "켜면 아래에서 고른 한글 항목과, 단축키(Alt+P 등)를 맞출 영문 배치 항목만 사용합니다.",
+            description="끄면 설정의 모든 입력 항목을 읽어 날개셋과 똑같이 동작합니다. "
+            "켜면 아래에서 고른 한글 항목과 영문 항목만 한/영 전환에 사용합니다.",
         )
         page.add(group)
 
@@ -147,10 +147,10 @@ class SetupWindow(Adw.ApplicationWindow):
         self.hangul_row.connect("notify::selected", self.on_change)
         group.add(self.hangul_row)
 
-        # 영문 배치 콤보.
+        # 영문 항목 콤보(한/영 전환 시 영문으로 쓸 항목).
         self.latin_row = Adw.ComboRow(
-            title="영문 배치 항목",
-            subtitle="단축키를 맞출 영문 배열 (예: 드보락)",
+            title="영문 입력 항목",
+            subtitle="한/영 전환 시 쓸 영문 항목",
             model=Gtk.StringList.new(labels),
         )
         self._set_combo(self.latin_row, _to_int(cfg.get("latin_entry", "1")))

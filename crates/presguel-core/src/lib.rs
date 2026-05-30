@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod engine;
+pub mod evdev;
 pub mod expr;
 pub mod jamo;
 pub mod unit;
@@ -16,6 +17,8 @@ pub mod unit;
 pub use config::{Config, Layout};
 #[doc(inline)]
 pub use engine::{Engine, KeyOutcome};
+#[doc(inline)]
+pub use evdev::{evdev_to_ascii, us_qwerty_ascii};
 #[doc(inline)]
 pub use jamo::compose;
 #[doc(inline)]

@@ -81,23 +81,24 @@ fn parse_int(s: &str) -> Option<u32> {
     s.strip_prefix("0x").and_then(|h| u32::from_str_radix(h, 16).ok()).or_else(|| s.parse().ok())
 }
 
-/// 입력 인자를 (라벨, keyval, state) 목록으로 만든다.
-/// 기본: 각 문자를 그 코드포인트 keyval(state 0)로.
-/// `--raw <tok>...`: 각 토큰은 `keyval` 또는 `keyval:state`(둘 다 16/10진).
-fn parse_keys(args: &[String]) -> Vec<(String, u32, u32)> {
+/// 입력 인자를 (라벨, keyval, keycode, state) 목록으로 만든다.
+/// 기본: 각 문자를 그 코드포인트 keyval(keycode 0, state 0)로.
+/// `--raw <tok>...`: 각 토큰은 `keyval[:state[:keycode]]` (모두 16/10진).
+fn parse_keys(args: &[String]) -> Vec<(String, u32, u32, u32)> {
     if args.first().map(String::as_str) == Some("--raw") {
         args[1..]
             .iter()
             .filter_map(|t| {
-                let (kvs, sts) = t.split_once(':').unwrap_or((t.as_str(), "0"));
-                let kv = parse_int(kvs)?;
-                let st = parse_int(sts)?;
-                Some((format!("0x{kv:04x}:0x{st:x}"), kv, st))
+                let mut it = t.split(':');
+                let kv = parse_int(it.next()?)?;
+                let st = it.next().and_then(parse_int).unwrap_or(0);
+                let code = it.next().and_then(parse_int).unwrap_or(0);
+                Some((format!("0x{kv:04x}:0x{st:x}:code{code}"), kv, code, st))
             })
             .collect()
     } else {
         let s = args.first().cloned().unwrap_or_else(|| "kf kfhf".to_string());
-        s.chars().map(|c| (format!("{c:?}"), c as u32, 0u32)).collect()
+        s.chars().map(|c| (format!("{c:?}"), c as u32, 0u32, 0u32)).collect()
     }
 }
 
@@ -178,9 +179,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _: () = engine.call("FocusIn", &()).await.unwrap_or(());
 
-    for (label, keyval, state) in &keys {
+    for (label, keyval, keycode, state) in &keys {
         println!("→ key {label}");
-        let handled: bool = engine.call("ProcessKeyEvent", &(*keyval, 0u32, *state)).await?;
+        let handled: bool = engine.call("ProcessKeyEvent", &(*keyval, *keycode, *state)).await?;
         println!("  handled={handled}");
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
