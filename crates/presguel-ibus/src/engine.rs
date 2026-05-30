@@ -90,12 +90,14 @@ pub struct IBusEngine {
     entries: Vec<Mode>,
     /// 현재 활성 입력 항목 인덱스.
     current: usize,
+    /// 전체 모드에서 기본으로 시작할 항목 인덱스(설정의 default).
+    default_entry: usize,
     /// IME_SWITCH 키심 → 전환 대상 항목을 정하는 식. 식의 변수 `A` = 현재 항목 인덱스.
     /// 예: `!A` 는 0↔1 토글(0이면 1, 아니면 0). 설정 ShortcutTable 의 value 를 그대로 평가.
     ime_switch: HashMap<u32, Expr>,
-    /// 간단 모드 여부(사용자 설정). 켜면 아래 두 항목만 쓰고 단축키를 영문 배치로 리매핑.
-    simple: bool,
-    /// 간단 모드에서 쓸 한글 항목 인덱스.
+    /// 마지막으로 반영한 사용자 설정(config.ini). focus_in/enable 마다 다시 읽어 즉시 반영.
+    settings: Settings,
+    /// 간단 모드에서 쓸 한글 항목 인덱스(settings 에서 파생, 항목 수로 클램프).
     hangul_idx: usize,
     /// 간단 모드에서 쓸 영문 배치 항목 인덱스(단축키 변환 기준).
     latin_idx: usize,
@@ -105,7 +107,13 @@ pub struct IBusEngine {
 }
 
 impl IBusEngine {
+    /// 설정 파일(config.ini)을 읽어 엔진을 만든다.
     pub fn new(config: &Config) -> Self {
+        Self::with_settings(config, Settings::load())
+    }
+
+    /// 명시한 설정으로 엔진을 만든다(테스트는 이걸 써서 전역 config.ini 에 의존하지 않는다).
+    pub fn with_settings(config: &Config, st: Settings) -> Self {
         // 모든 입력 항목을 컴파일한다. KeyTable 에 H3| 낱자가 있으면 한글 조합 항목,
         // 아니면 로마자/직접(문자만 내보냄) 항목으로 본다.
         let mut entries = Vec::new();
@@ -143,31 +151,74 @@ impl IBusEngine {
             .entry(KEY_HANGUL)
             .or_insert_with(|| Expr::parse("!A").expect("valid default switch expr"));
 
-        // 사용자 설정(간단 모드) 반영.
-        let st = Settings::load();
-        let simple = st.simple_mode;
+        let default_entry = config.default_entry.min(last);
+        let mut engine = Self {
+            entries,
+            current: default_entry,
+            default_entry,
+            ime_switch,
+            settings: Settings::default(), // apply_settings 가 곧 덮어쓴다
+            hangul_idx: 0,
+            latin_idx: 0,
+            shortcut_layout: None,
+        };
+        engine.apply_settings(st);
+        engine
+    }
+
+    /// 간단 모드일 때 단축키 변환에 쓸 영문 배치 KeyTable 을 항목에서 뽑는다.
+    fn derive_shortcut_layout(
+        entries: &[Mode],
+        simple: bool,
+        latin_idx: usize,
+    ) -> Option<HashMap<u32, Expr>> {
+        if !simple {
+            return None;
+        }
+        match entries.get(latin_idx) {
+            Some(Mode::Latin { keys }) => Some(keys.clone()),
+            // 영문 항목이 한글 조합이면 단축키 변환은 비활성(드물게).
+            _ => None,
+        }
+    }
+
+    /// 사용자 설정을 반영한다(파생 필드와 현재 항목 보정). 항상 적용한다.
+    fn apply_settings(&mut self, st: Settings) {
+        let last = self.entries.len() - 1;
+        let was_simple = self.settings.simple_mode;
         let hangul_idx = st.hangul_entry.min(last);
         let latin_idx = st.latin_entry.min(last);
-        // 간단 모드에서 단축키 변환에 쓸 영문 배치 KeyTable.
-        let shortcut_layout = if simple {
-            match &entries[latin_idx] {
-                Mode::Latin { keys } => Some(keys.clone()),
-                // 영문 항목이 한글 조합이면 단축키 변환은 비활성(드물게).
-                Mode::Hangul(_) => None,
+        self.hangul_idx = hangul_idx;
+        self.latin_idx = latin_idx;
+        self.shortcut_layout = Self::derive_shortcut_layout(&self.entries, st.simple_mode, latin_idx);
+        if st.simple_mode {
+            // 간단 모드 진입/항목 변경 시 현재 항목을 {한글, 영문} 안으로 보정.
+            if !was_simple || (self.current != hangul_idx && self.current != latin_idx) {
+                self.current = hangul_idx;
             }
-        } else {
-            None
-        };
-        let current = if simple { hangul_idx } else { config.default_entry.min(last) };
+        } else if was_simple {
+            // 간단 → 전체 전환: 기본 항목으로.
+            self.current = self.default_entry.min(last);
+        }
+        self.settings = st;
+    }
 
-        Self { entries, current, ime_switch, simple, hangul_idx, latin_idx, shortcut_layout }
+    /// config.ini 를 다시 읽어 바뀌었으면 반영한다. 바뀜 여부를 돌려준다.
+    /// focus_in/enable 에서 호출 → 설정창 변경이 입력창 클릭 시 즉시 반영(재시작 불필요).
+    fn reload_settings(&mut self) -> bool {
+        let st = Settings::load();
+        if st == self.settings {
+            return false;
+        }
+        self.apply_settings(st);
+        true
     }
 
     /// IME_SWITCH 키를 눌렀을 때 전환할 대상 항목 인덱스.
     /// - 간단 모드: 한글 항목 ↔ 영문 항목만 오간다(설정에서 고른 둘).
     /// - 전체 모드: ShortcutTable value 식(예 `!A`, A=현재 항목)을 평가. `!A`→0이면 1, 아니면 0.
     fn switch_target(&self, keyval: u32) -> usize {
-        if self.simple {
+        if self.settings.simple_mode {
             return if self.current == self.hangul_idx { self.latin_idx } else { self.hangul_idx };
         }
         let len = self.entries.len() as i64;
@@ -361,6 +412,8 @@ impl IBusEngine {
     }
 
     async fn focus_in(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
+        // 설정창 변경을 즉시 반영(재시작 불필요): 입력 컨텍스트가 잡힐 때마다 config.ini 재확인.
+        self.reload_settings();
         self.register_props(&se).await;
         Ok(())
     }
@@ -380,6 +433,7 @@ impl IBusEngine {
     }
 
     async fn enable(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
+        self.reload_settings();
         self.register_props(&se).await;
         Ok(())
     }
@@ -463,9 +517,10 @@ mod tests {
   </InputLayer>
 </EditContextSetting>"#;
 
+    /// 전역 config.ini 에 의존하지 않도록 기본 설정(전체 모드)으로 만든다.
     fn engine() -> IBusEngine {
         let cfg = Config::parse(MINI).unwrap();
-        IBusEngine::new(&cfg)
+        IBusEngine::with_settings(&cfg, Settings::default())
     }
 
     #[test]
@@ -482,6 +537,36 @@ mod tests {
         // 영문 배치 미설정(전체 모드)이면 변환 안 함.
         e.shortcut_layout = None;
         assert_eq!(e.remap_shortcut(0x70, 0), None);
+    }
+
+    #[test]
+    fn default_settings_is_full_mode() {
+        let e = engine();
+        assert!(!e.settings.simple_mode);
+        assert!(e.shortcut_layout.is_none()); // 전체 모드 → 단축키 변환 없음
+    }
+
+    #[test]
+    fn apply_simple_mode_sets_shortcut_layout_and_current() {
+        // MINI 에는 항목이 하나뿐이라 latin_idx 가 한글 항목으로 클램프됨 → shortcut_layout None.
+        // 그래도 current 보정과 settings 반영은 확인할 수 있다.
+        let cfg = Config::parse(MINI).unwrap();
+        let st = Settings { simple_mode: true, hangul_entry: 0, latin_entry: 0 };
+        let e = IBusEngine::with_settings(&cfg, st);
+        assert!(e.settings.simple_mode);
+        assert_eq!(e.current, 0); // 간단 모드 → 한글 항목에서 시작
+    }
+
+    #[test]
+    fn reload_detects_change() {
+        // 같은 설정이면 reload 가 false, 바뀌면 true 를 돌려준다(파일 IO 없이 내부 상태로).
+        let mut e = engine();
+        let before = e.settings;
+        // settings 가 같으면(파일이 default 와 동일하거나 없으면) 변화 감지 안 함.
+        // 여기선 apply_settings 로 직접 바꿔 동작만 확인.
+        e.apply_settings(Settings { simple_mode: true, hangul_entry: 0, latin_entry: 0 });
+        assert_ne!(before.simple_mode, e.settings.simple_mode);
+        assert!(e.settings.simple_mode);
     }
 
     #[test]

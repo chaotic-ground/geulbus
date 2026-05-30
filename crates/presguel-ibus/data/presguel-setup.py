@@ -110,17 +110,12 @@ class SetupWindow(Adw.ApplicationWindow):
         cfg = load_ini()
         self.entries = load_entries()
         labels = [lbl for _, lbl in self.entries] or ["(nalgaeset.xml 을 찾을 수 없음)"]
+        # 초기값 세팅 중에는 notify 핸들러가 저장하지 않도록 막는다(불필요한 쓰기 방지).
+        self._loading = True
 
-        # 헤더바 + 본문을 담는 ToolbarView (Adw 표준 레이아웃).
+        # 헤더바 + 본문을 담는 ToolbarView (Adw 표준 레이아웃). 즉시 적용이라 저장 버튼 없음.
         toolbar = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        toolbar.add_top_bar(header)
-
-        # 저장 버튼(헤더 우측, suggested-action).
-        save_btn = Gtk.Button(label="저장")
-        save_btn.add_css_class("suggested-action")
-        save_btn.connect("clicked", self.on_save)
-        header.pack_end(save_btn)
+        toolbar.add_top_bar(Adw.HeaderBar())
 
         page = Adw.PreferencesPage()
         toolbar.set_content(page)
@@ -139,7 +134,7 @@ class SetupWindow(Adw.ApplicationWindow):
             subtitle="한글 / 영문 배치 항목을 직접 지정",
         )
         self.simple_row.set_active(_to_bool(cfg.get("simple_mode", "false")))
-        self.simple_row.connect("notify::active", self.on_toggle)
+        self.simple_row.connect("notify::active", self.on_change)
         group.add(self.simple_row)
 
         # 한글 항목 콤보.
@@ -149,6 +144,7 @@ class SetupWindow(Adw.ApplicationWindow):
             model=Gtk.StringList.new(labels),
         )
         self._set_combo(self.hangul_row, _to_int(cfg.get("hangul_entry", "0")))
+        self.hangul_row.connect("notify::selected", self.on_change)
         group.add(self.hangul_row)
 
         # 영문 배치 콤보.
@@ -158,12 +154,13 @@ class SetupWindow(Adw.ApplicationWindow):
             model=Gtk.StringList.new(labels),
         )
         self._set_combo(self.latin_row, _to_int(cfg.get("latin_entry", "1")))
+        self.latin_row.connect("notify::selected", self.on_change)
         group.add(self.latin_row)
 
         # 안내 행.
         note = Adw.PreferencesGroup()
         lbl = Gtk.Label(
-            label="저장 후 입력 소스를 한 번 전환하거나 ibus restart 하면 반영됩니다.",
+            label="변경하면 즉시 적용됩니다. 입력 중이었다면 입력창을 한 번 다시 누르면 반영됩니다.",
             xalign=0,
             wrap=True,
         )
@@ -172,6 +169,7 @@ class SetupWindow(Adw.ApplicationWindow):
         page.add(note)
 
         self._sync_sensitivity()
+        self._loading = False
 
     def _set_combo(self, row, idx):
         n = max(1, len(self.entries))
@@ -184,15 +182,15 @@ class SetupWindow(Adw.ApplicationWindow):
         self.hangul_row.set_sensitive(on)
         self.latin_row.set_sensitive(on)
 
-    def on_toggle(self, *_):
+    def on_change(self, *_):
+        """위젯이 바뀔 때마다 즉시 저장(GNOME instant-apply)."""
         self._sync_sensitivity()
-
-    def on_save(self, *_):
+        if self._loading:
+            return
         simple = self.simple_row.get_active()
         h = self.hangul_row.get_selected() if self.entries else 0
         l = self.latin_row.get_selected() if self.entries else 1
         save_ini(simple, h, l)
-        self.close()
 
 
 class SetupApp(Adw.Application):
