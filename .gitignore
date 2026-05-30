@@ -1,0 +1,13 @@
+# Rust build output
+/target/
+**/target/
+
+# Backup files
+**/*.rs.bk
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
