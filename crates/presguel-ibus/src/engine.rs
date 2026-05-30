@@ -3,7 +3,7 @@
 //! 키 이벤트(method)를 받아 조합하고, 결과를 CommitText / UpdatePreeditText
 //! (signal)로 데몬에 돌려준다. 참고: `research/03-ibus-zbus.md` §2,§4.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use presguel_core::expr::{Ctx, Expr, Value as ExprValue};
 use presguel_core::{Config, Engine as Core};
@@ -88,9 +88,12 @@ pub struct IBusEngine {
     entries: Vec<Mode>,
     /// 현재 활성 입력 항목 인덱스.
     current: usize,
-    /// IME_SWITCH 키심 → 전환 대상 항목을 정하는 식. 식의 변수 `A` = 현재 항목 인덱스.
-    /// 예: `!A` 는 0↔1 토글(0이면 1, 아니면 0). 설정 ShortcutTable 의 value 를 그대로 평가.
-    ime_switch: HashMap<u32, Expr>,
+    /// 한글(home) 항목 인덱스. 전환 키는 home 과 '직전 비-home 항목' 사이를 오간다.
+    home: usize,
+    /// 직전에 머문 비-home 항목(한/영 토글 기억용).
+    last_other: usize,
+    /// IME_SWITCH 를 일으키는 키심들(설정 ShortcutTable 에서 해석).
+    ime_switch: HashSet<u32>,
 }
 
 impl IBusEngine {
@@ -114,25 +117,40 @@ impl IBusEngine {
         if entries.is_empty() {
             entries.push(Mode::Latin { keys: HashMap::new() });
         }
-        let current = config.default_entry.min(entries.len() - 1);
+        // home = 한글 항목(없으면 default_entry). 전환은 home ↔ 직전 비-home 항목 토글.
+        let home = config
+            .first_hangul_entry()
+            .unwrap_or(config.default_entry)
+            .min(entries.len() - 1);
+        // 초기 '직전 항목': 저장된 current 가 home 이 아니면 그것, 아니면 첫 비-home, 없으면 home.
+        let last_other = if config.current_entry != home && config.current_entry < entries.len() {
+            config.current_entry
+        } else {
+            (0..entries.len()).find(|&i| i != home).unwrap_or(home)
+        };
+        let current = home;
 
-        // usage=IME_SWITCH 단축글쇠: value 식(예 "!A")을 키심에 매핑.
-        let mut ime_switch: HashMap<u32, Expr> = HashMap::new();
+        // usage=IME_SWITCH 단축글쇠의 키심. 한/영 키(0xff31)는 항상 포함.
+        let mut ime_switch: HashSet<u32> = HashSet::new();
+        ime_switch.insert(KEY_HANGUL);
         for sc in &config.editor.shortcuts {
             if sc.usage == "IME_SWITCH" {
-                if let Ok(expr) = Expr::parse(&sc.value) {
-                    for &ks in vk_to_keysyms(&sc.key) {
-                        ime_switch.insert(ks, expr.clone());
-                    }
-                }
+                ime_switch.extend(vk_to_keysyms(&sc.key).iter().copied());
             }
         }
-        // 한/영 키(0xff31)는 설정에 IME_SWITCH 가 없어도 기본 !A(0↔1) 로 동작.
-        ime_switch
-            .entry(KEY_HANGUL)
-            .or_insert_with(|| Expr::parse("!A").expect("valid default switch expr"));
 
-        Self { entries, current, ime_switch }
+        Self { entries, current, home, last_other, ime_switch }
+    }
+
+    /// 전환 대상 항목을 계산하고, home 을 떠날 때 직전 항목을 기억한다.
+    /// 비-home → home, home → 직전 비-home 항목.
+    fn compute_switch(&mut self) -> usize {
+        if self.current != self.home {
+            self.last_other = self.current;
+            self.home
+        } else {
+            self.last_other
+        }
     }
 
     fn cur(&self) -> &Mode {
@@ -185,7 +203,7 @@ impl IBusEngine {
     /// 키 이벤트를 분류한다(순수 함수). `process_key_event` 가 이 결과로 분기한다.
     /// IME_SWITCH 는 release/수식어보다 먼저 본다 — CapsLock 은 수식어 키심이기도 하므로.
     fn classify(&self, keyval: u32, state: u32) -> KeyClass {
-        if self.ime_switch.contains_key(&keyval) {
+        if self.ime_switch.contains(&keyval) {
             return KeyClass::ImeSwitch;
         }
         if state & RELEASE_MASK != 0 {
@@ -219,23 +237,10 @@ impl IBusEngine {
         let class = self.classify(keyval, state);
         let release = state & RELEASE_MASK != 0;
         match class {
-            // IME_SWITCH(한/영·CapsLock 등): 눌림/뗌 모두 소비, 눌림에서 전환식을 평가.
-            // value 식(예 "!A")을 A=현재 항목으로 평가해 대상 항목을 얻는다. `!A` → 0이면 1, 아니면 0.
+            // IME_SWITCH(한/영·CapsLock 등): 눌림/뗌 모두 소비. 눌림에서 home↔직전 항목 토글.
             KeyClass::ImeSwitch => {
                 if !release {
-                    let len = self.entries.len() as i64;
-                    let target = self
-                        .ime_switch
-                        .get(&keyval)
-                        .and_then(|e| {
-                            e.eval(&Ctx { a: self.current as i64, ..Default::default() }).ok()
-                        })
-                        .and_then(|v| match v {
-                            ExprValue::Int(t) => Some(t),
-                            _ => None,
-                        })
-                        .map(|t| t.clamp(0, len - 1) as usize)
-                        .unwrap_or(self.current);
+                    let target = self.compute_switch();
                     if target != self.current {
                         self.flush_current(&se).await;
                         self.current = target;
@@ -400,6 +405,10 @@ mod tests {
         <UnitMixTable/><VirtualUnitTable/><AutomataTable default="0"/>
       </GeneratorSetting>
     </InputEntry>
+    <InputEntry>
+      <InputSchemeSetting object="CInputScheme"/>
+      <GeneratorSetting object="CIme"/>
+    </InputEntry>
   </InputLayer>
 </EditContextSetting>"#;
 
@@ -412,25 +421,30 @@ mod tests {
     fn capslock_in_switch_set() {
         let e = engine();
         // 설정의 VK_CAPITAL → Caps_Lock(0xffe5), VK_HANGUL → 0xff31
-        assert!(e.ime_switch.contains_key(&0xffe5));
-        assert!(e.ime_switch.contains_key(&0xff31));
+        assert!(e.ime_switch.contains(&0xffe5));
+        assert!(e.ime_switch.contains(&0xff31));
         // VK_HANJA 는 KEYCHAR 라 전환 집합에 없어야 한다.
-        assert!(!e.ime_switch.contains_key(&0xff34));
+        assert!(!e.ime_switch.contains(&0xff34));
     }
 
     #[test]
-    fn switch_expr_is_not_a_toggle() {
-        use presguel_core::expr::{Ctx, Value as EV};
-        let e = engine();
-        // ShortcutTable value="!A" → A=현재 항목. 0이면 1, 아니면 0.
-        let expr = e.ime_switch.get(&0xffe5).expect("capslock switch expr");
-        let f = |cur: i64| match expr.eval(&Ctx { a: cur, ..Default::default() }).unwrap() {
-            EV::Int(t) => t,
-            other => panic!("expected int, got {other:?}"),
-        };
-        assert_eq!(f(0), 1);
-        assert_eq!(f(1), 0);
-        assert_eq!(f(2), 0);
+    fn switch_toggles_home_and_last() {
+        let mut e = engine();
+        // 항목 2개(0=한글 home, 1=패스스루). home=0, 시작=0, 직전=1.
+        assert_eq!(e.home, 0);
+        assert_eq!(e.current, 0);
+        assert_eq!(e.last_other, 1);
+        // home(0) → 직전(1)
+        let t1 = e.compute_switch();
+        assert_eq!(t1, 1);
+        e.current = t1;
+        // 비-home(1) → home(0), 직전을 1 로 기억
+        let t2 = e.compute_switch();
+        assert_eq!(t2, 0);
+        e.current = t2;
+        assert_eq!(e.last_other, 1);
+        // 다시 home(0) → 직전(1)
+        assert_eq!(e.compute_switch(), 1);
     }
 
     #[test]
