@@ -63,7 +63,7 @@ sudo tee "$component_dst" > /dev/null <<XML
       <longname>Presguel (날개셋 세벌식)</longname>
       <description>날개셋 설정 호환 한글 입력기</description>
       <rank>50</rank>
-      <symbol>한</symbol>
+      <symbol>가</symbol>
     </engine>
   </engines>
 </component>

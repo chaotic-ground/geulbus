@@ -11,6 +11,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::{fdo, interface};
 use zbus::zvariant::Value;
 
+use crate::ibus_property::{make_input_mode_property, make_prop_list};
 use crate::ibus_text::{make_ibus_text, make_preedit_text};
 
 // 수식어/키 마스크 (research/03 §4, 실측).
@@ -106,6 +107,26 @@ impl IBusEngine {
         }
     }
 
+    /// 패널에 표시할 현재 모드 심볼. 날개셋(Windows) 방식: 한글이면 "가", 영문이면 "A".
+    /// (ibus-hangul 의 "한"과 달리 날개셋은 음절자 "가"·라틴 "A" 를 쓴다.)
+    fn mode_symbol(&self) -> &'static str {
+        if self.hangul {
+            "가"
+        } else {
+            "A"
+        }
+    }
+
+    /// 입력 모드 속성을 등록(패널이 심볼을 알도록). focus_in/enable 시 호출.
+    async fn register_props(&self, se: &SignalEmitter<'_>) {
+        let _ = Self::register_properties(se, make_prop_list(self.mode_symbol(), "Presguel")).await;
+    }
+
+    /// 모드가 바뀌었을 때 패널 심볼을 갱신.
+    async fn update_indicator(&self, se: &SignalEmitter<'_>) {
+        let _ = Self::update_property(se, make_input_mode_property(self.mode_symbol(), "Presguel")).await;
+    }
+
     /// 키 이벤트를 분류한다(순수 함수). `process_key_event` 가 이 결과로 분기한다.
     /// IME_SWITCH 는 release/수식어보다 먼저 본다 — CapsLock 은 수식어 키심이기도 하므로.
     fn classify(&self, keyval: u32, state: u32) -> KeyClass {
@@ -147,6 +168,7 @@ impl IBusEngine {
                 if !release {
                     self.flush_commit(&se).await;
                     self.hangul = !self.hangul;
+                    self.update_indicator(&se).await; // 패널 심볼 한↔EN 갱신
                 }
                 Ok(true)
             }
@@ -183,7 +205,8 @@ impl IBusEngine {
         }
     }
 
-    async fn focus_in(&mut self) -> fdo::Result<()> {
+    async fn focus_in(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
+        self.register_props(&se).await;
         Ok(())
     }
 
@@ -198,7 +221,8 @@ impl IBusEngine {
         Ok(())
     }
 
-    async fn enable(&mut self) -> fdo::Result<()> {
+    async fn enable(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
+        self.register_props(&se).await;
         Ok(())
     }
 
@@ -240,6 +264,14 @@ impl IBusEngine {
         keycode: u32,
         state: u32,
     ) -> zbus::Result<()>;
+
+    /// 패널에 속성(입력 모드 표시기) 목록을 등록.
+    #[zbus(signal)]
+    async fn register_properties(se: &SignalEmitter<'_>, props: Value<'_>) -> zbus::Result<()>;
+
+    /// 모드 변경 시 패널 속성(심볼)을 갱신.
+    #[zbus(signal)]
+    async fn update_property(se: &SignalEmitter<'_>, prop: Value<'_>) -> zbus::Result<()>;
 }
 
 #[cfg(test)]

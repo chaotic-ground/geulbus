@@ -6,6 +6,7 @@
 mod addr;
 mod engine;
 mod factory;
+mod ibus_property;
 mod ibus_text;
 
 use std::path::PathBuf;
