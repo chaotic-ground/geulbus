@@ -445,7 +445,7 @@ impl Parser {
                 if tag == "C0" {
                     Err(ExprError::BadCommand(s))
                 } else {
-                    let u = unit::resolve_mnemonic(&s, None).ok_or_else(|| ExprError::BadUnit(s))?;
+                    let u = unit::resolve_mnemonic(&s, None).ok_or(ExprError::BadUnit(s))?;
                     Ok(Expr::Unit(u))
                 }
             }

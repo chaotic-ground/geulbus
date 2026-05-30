@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use presguel_core::config::Config;
+use presguel_core::Engine;
 
 fn config_path() -> Option<PathBuf> {
     let p = std::env::var("PRESGUEL_TEST_CONFIG")
@@ -87,4 +88,88 @@ fn real_config_compiles() {
     assert_eq!(layout.virtual_units.get(&128), Some(&Jamo::new(Jung, 0x1169)));
     assert_eq!(layout.virtual_units.get(&129), Some(&Jamo::new(Jung, 0x116E)));
     assert_eq!(layout.virtual_units.get(&130), Some(&Jamo::new(Jung, 0x1173)));
+}
+
+/// 키 시퀀스를 눌러 (확정 누적 + 마지막 flush) 전체 출력 문자열을 만든다.
+fn run(cfg: &Config, keys: &str) -> String {
+    let layout = cfg.compile(0).unwrap();
+    let mut e = Engine::new(layout);
+    let mut out = String::new();
+    for ch in keys.chars() {
+        out.push_str(&e.press(ch as u8, false).commit);
+    }
+    out.push_str(&e.flush());
+    out
+}
+
+/// `research/02-config-decode.md` §D 의 테스트 벡터(도달 가능한 것)를 실제 설정으로 검증.
+#[test]
+fn decode_test_vectors() {
+    let Some(cfg) = load() else {
+        eprintln!("skip: nalgaeset.xml 없음");
+        return;
+    };
+
+    // (키 시퀀스, 기대 출력)
+    let cases: &[(&str, &str)] = &[
+        // 기본 음절
+        ("kf", "가"),
+        ("hf", "나"),
+        ("uf", "다"),
+        // 받침
+        ("kfx", "각"),
+        ("kfs", "간"),
+        ("ifs", "만"),
+        ("hfs", "난"),
+        // 겹모음
+        ("k/f", "과"),
+        ("k9t", "궈"),
+        ("j9t", "워"),
+        ("j/d", "외"),
+        ("j9d", "위"),
+        ("j8", "의"),
+        // 겹받침 (전용 키)
+        ("kf@", "갉"),
+        ("ufF", "닮"),
+        ("kfV", "갃"),
+        ("jfS", "않"),
+        // 된소리: 연타 / 갈마들이 토글
+        ("kkf", "까"),
+        ("k$f", "까"),
+        ("n$f", "싸"),
+        ("k$$f", "가"),
+        ("u$f", "따"),
+        ("l$f", "짜"),
+        // 이어치기: 새 초성이 앞 음절 확정
+        ("kfkf", "가가"),
+        ("kfhf", "가나"),
+        // 홑낱자 → 호환 자모(FinalConv)
+        ("k", "ㄱ"),
+        ("f", "ㅏ"),
+        ("x", "ㄱ"),
+        // `@` = `T ? H3|_RG : 0x40` → 빈 상태(T=0)에서는 리터럴 '@'. (decode 벡터 29 정정:
+        // 조건식을 빠뜨려 ㄺ 로 적었으나, 비조합 상태의 `@`는 '@' 가 맞다.)
+        ("@", "@"),
+        ("X", "ㅄ"),
+        // ㄹ 겹받침 (UnitMix RS/RT)
+        ("yfw", "랄"),
+        ("yfwq", "랈"),
+        ("yfwW", "랉"),
+        ("ifQ", "맢"),
+        // CVC 뒤 모음 → 3벌식(도깨비불 없음): 받침 안 옮김
+        ("kfxf", "각ㅏ"),
+        // 가상 단위: v=ㅗ, b=ㅜ, g=ㅡ
+        ("kvf", "과"),
+        ("jg", "으"),
+        ("kg", "그"),
+    ];
+
+    let mut fails = Vec::new();
+    for (keys, expected) in cases {
+        let got = run(&cfg, keys);
+        if got != *expected {
+            fails.push(format!("  {keys:?}: 기대 {expected:?}, 실제 {got:?}"));
+        }
+    }
+    assert!(fails.is_empty(), "{} 개 벡터 불일치:\n{}", fails.len(), fails.join("\n"));
 }

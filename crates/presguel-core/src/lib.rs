@@ -7,12 +7,15 @@
 //! 설계 근거는 저장소의 `research/01..04-*.md` 참고.
 
 pub mod config;
+pub mod engine;
 pub mod expr;
 pub mod jamo;
 pub mod unit;
 
 #[doc(inline)]
 pub use config::{Config, Layout};
+#[doc(inline)]
+pub use engine::{Engine, KeyOutcome};
 #[doc(inline)]
 pub use jamo::compose;
 #[doc(inline)]
