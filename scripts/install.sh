@@ -57,7 +57,7 @@ sudo tee "$component_dst" > /dev/null <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <component>
   <name>org.freedesktop.IBus.Presguel</name>
-  <description>Presguel Korean Input Method (날개셋 호환)</description>
+  <description>Presguel Korean Input Method</description>
   <exec>$bin_dst --ibus</exec>
   <version>0.1.0</version>
   <author>lens0021 &lt;lorentz0021@gmail.com&gt;</author>
@@ -70,8 +70,8 @@ sudo tee "$component_dst" > /dev/null <<XML
       <language>ko</language>
       <icon>ibus-hangul</icon>
       <layout>us</layout>
-      <longname>Presguel (날개셋 세벌식)</longname>
-      <description>날개셋 설정 호환 한글 입력기</description>
+      <longname>Presguel</longname>
+      <description>Presguel 한글 입력기</description>
       <rank>50</rank>
       <symbol>가</symbol>
       <setup>$setup_dst</setup>
