@@ -29,7 +29,11 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { simple_mode: false, hangul_entry: 0, latin_entry: 1 }
+        Self {
+            simple_mode: false,
+            hangul_entry: 0,
+            latin_entry: 1,
+        }
     }
 }
 
@@ -54,7 +58,11 @@ impl Settings {
             .ok()
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))?;
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".config"))
+            })?;
         Some(base.join("presguel").join("config.ini"))
     }
 
@@ -66,7 +74,9 @@ impl Settings {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             let (k, v) = (k.trim(), v.trim());
             match k {
                 "simple_mode" => {

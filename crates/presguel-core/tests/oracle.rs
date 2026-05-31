@@ -77,17 +77,26 @@ fn real_config_compiles() {
     use presguel_core::Category::*;
     assert_eq!(layout.combine(Cho, 0x1100, TOGGLE), Some(0x1101)); // ㄱ→ㄲ
     assert_eq!(layout.combine(Cho, 0x1101, TOGGLE), Some(0x1100)); // ㄲ→ㄱ
-    // 겹모음 6개
+                                                                   // 겹모음 6개
     assert_eq!(layout.combine(Jung, 0x1169, 0x1161), Some(0x116A)); // ㅗ+ㅏ→ㅘ
     assert_eq!(layout.combine(Jung, 0x116E, 0x1165), Some(0x116F)); // ㅜ+ㅓ→ㅝ
-    // 겹받침 3개 (RS/RT/RP)
+                                                                    // 겹받침 3개 (RS/RT/RP)
     assert_eq!(layout.combine(Jong, 0x11AF, 0x11BA), Some(0x11B3)); // ㄹ+ㅅ→ㄽ
 
     // 가상 단위 128/129/130 = ㅗ/ㅜ/ㅡ
     use presguel_core::Jamo;
-    assert_eq!(layout.virtual_units.get(&128), Some(&Jamo::new(Jung, 0x1169)));
-    assert_eq!(layout.virtual_units.get(&129), Some(&Jamo::new(Jung, 0x116E)));
-    assert_eq!(layout.virtual_units.get(&130), Some(&Jamo::new(Jung, 0x1173)));
+    assert_eq!(
+        layout.virtual_units.get(&128),
+        Some(&Jamo::new(Jung, 0x1169))
+    );
+    assert_eq!(
+        layout.virtual_units.get(&129),
+        Some(&Jamo::new(Jung, 0x116E))
+    );
+    assert_eq!(
+        layout.virtual_units.get(&130),
+        Some(&Jamo::new(Jung, 0x1173))
+    );
 }
 
 /// 키 시퀀스를 눌러 (확정 누적 + 마지막 flush) 전체 출력 문자열을 만든다.
@@ -171,5 +180,10 @@ fn decode_test_vectors() {
             fails.push(format!("  {keys:?}: 기대 {expected:?}, 실제 {got:?}"));
         }
     }
-    assert!(fails.is_empty(), "{} 개 벡터 불일치:\n{}", fails.len(), fails.join("\n"));
+    assert!(
+        fails.is_empty(),
+        "{} 개 벡터 불일치:\n{}",
+        fails.len(),
+        fails.join("\n")
+    );
 }

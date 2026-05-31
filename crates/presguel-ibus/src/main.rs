@@ -32,7 +32,11 @@ fn resolve_config_path() -> Result<PathBuf, String> {
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".config"))
+        })
         .ok_or_else(|| "HOME/XDG_CONFIG_HOME 가 없음".to_string())?;
     Ok(base.join("presguel").join("nalgaeset.xml"))
 }

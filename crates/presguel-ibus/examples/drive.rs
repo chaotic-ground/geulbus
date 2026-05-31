@@ -24,7 +24,11 @@ fn ibus_address() -> Result<String, String> {
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".config"))
+        })
         .ok_or("no HOME")?;
     let machine_id = std::fs::read_to_string("/etc/machine-id")
         .or_else(|_| std::fs::read_to_string("/var/lib/dbus/machine-id"))
@@ -36,9 +40,15 @@ fn ibus_address() -> Result<String, String> {
     } else {
         let d = std::env::var("DISPLAY").unwrap_or_default();
         let (_h, r) = d.split_once(':').unwrap_or(("", "0"));
-        ("unix".to_string(), r.split('.').next().unwrap_or("0").to_string())
+        (
+            "unix".to_string(),
+            r.split('.').next().unwrap_or("0").to_string(),
+        )
     };
-    let file = config.join("ibus").join("bus").join(format!("{machine_id}-{host}-{disp}"));
+    let file = config
+        .join("ibus")
+        .join("bus")
+        .join(format!("{machine_id}-{host}-{disp}"));
     let body = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     for line in body.lines() {
         if let Some(v) = line.trim().strip_prefix("IBUS_ADDRESS=") {
@@ -78,7 +88,9 @@ fn prop_symbol(prop: &Value<'_>) -> String {
 
 /// 16/10진 정수 파싱.
 fn parse_int(s: &str) -> Option<u32> {
-    s.strip_prefix("0x").and_then(|h| u32::from_str_radix(h, 16).ok()).or_else(|| s.parse().ok())
+    s.strip_prefix("0x")
+        .and_then(|h| u32::from_str_radix(h, 16).ok())
+        .or_else(|| s.parse().ok())
 }
 
 /// 입력 인자를 (라벨, keyval, keycode, state) 목록으로 만든다.
@@ -97,8 +109,13 @@ fn parse_keys(args: &[String]) -> Vec<(String, u32, u32, u32)> {
             })
             .collect()
     } else {
-        let s = args.first().cloned().unwrap_or_else(|| "kf kfhf".to_string());
-        s.chars().map(|c| (format!("{c:?}"), c as u32, 0u32, 0u32)).collect()
+        let s = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "kf kfhf".to_string());
+        s.chars()
+            .map(|c| (format!("{c:?}"), c as u32, 0u32, 0u32))
+            .collect()
     }
 }
 
@@ -181,7 +198,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (label, keyval, keycode, state) in &keys {
         println!("→ key {label}");
-        let handled: bool = engine.call("ProcessKeyEvent", &(*keyval, *keycode, *state)).await?;
+        let handled: bool = engine
+            .call("ProcessKeyEvent", &(*keyval, *keycode, *state))
+            .await?;
         println!("  handled={handled}");
         tokio::time::sleep(Duration::from_millis(60)).await;
     }

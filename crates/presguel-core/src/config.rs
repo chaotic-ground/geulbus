@@ -145,7 +145,11 @@ impl Layout {
 
     /// 홑낱자 출력용 호환 자모: 설정의 FinalConv 우선, 없으면 기본 호환표.
     pub fn standalone(&self, j: Jamo) -> Option<char> {
-        let compat = self.final_conv.get(&j.cp).copied().or_else(|| j.default_compat());
+        let compat = self
+            .final_conv
+            .get(&j.cp)
+            .copied()
+            .or_else(|| j.default_compat());
         compat.and_then(char::from_u32)
     }
 }
@@ -158,19 +162,29 @@ impl Config {
 
     /// 지정한 입력 항목을 엔진용 `Layout` 으로 컴파일한다.
     pub fn compile(&self, entry_idx: usize) -> Result<Layout, ConfigError> {
-        let entry = self.entries.get(entry_idx).ok_or(ConfigError::NoEntry(entry_idx))?;
+        let entry = self
+            .entries
+            .get(entry_idx)
+            .ok_or(ConfigError::NoEntry(entry_idx))?;
 
         let keys = entry
             .key_table
             .as_ref()
-            .map(|kt| kt.keys.iter().map(|(&at, kd)| (at, kd.expr.clone())).collect())
+            .map(|kt| {
+                kt.keys
+                    .iter()
+                    .map(|(&at, kd)| (at, kd.expr.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut combine = HashMap::new();
         for m in &entry.unit_mix {
             let a = resolve_jamo(&m.a, m.unit)?;
             let to = resolve_jamo(&m.to, m.unit)?;
-            let b_cp = match unit::resolve_operand(&m.b, Some(m.unit)).ok_or_else(|| ConfigError::BadUnit(m.b.clone()))? {
+            let b_cp = match unit::resolve_operand(&m.b, Some(m.unit))
+                .ok_or_else(|| ConfigError::BadUnit(m.b.clone()))?
+            {
                 Unit::Toggle => unit::TOGGLE,
                 Unit::Jamo(j) => j.cp,
                 Unit::Virtual(_) => return Err(ConfigError::BadUnit(m.b.clone())),
@@ -185,7 +199,11 @@ impl Config {
         }
 
         Ok(Layout {
-            name: entry.key_table.as_ref().map(|k| k.name.clone()).unwrap_or_default(),
+            name: entry
+                .key_table
+                .as_ref()
+                .map(|k| k.name.clone())
+                .unwrap_or_default(),
             keys,
             combine,
             virtual_units,
@@ -322,7 +340,13 @@ fn parse_config(xml: &str) -> Result<Config, ConfigError> {
                         })?;
                         if let Some(en) = cfg.entries.last_mut() {
                             if let Some(kt) = en.key_table.as_mut() {
-                                kt.keys.insert(at, KeyDef { raw: val.to_string(), expr });
+                                kt.keys.insert(
+                                    at,
+                                    KeyDef {
+                                        raw: val.to_string(),
+                                        expr,
+                                    },
+                                );
                             }
                         }
                     }
@@ -490,18 +514,33 @@ mod tests {
 
         // 갈마들이/된소리 조합: ㄱ초성 + ㄱ초성 → ㄲ초성, ㄱ + 토글 → ㄲ
         assert_eq!(layout.combine(Category::Cho, 0x1100, 0x1100), Some(0x1101));
-        assert_eq!(layout.combine(Category::Cho, 0x1100, unit::TOGGLE), Some(0x1101));
+        assert_eq!(
+            layout.combine(Category::Cho, 0x1100, unit::TOGGLE),
+            Some(0x1101)
+        );
         // 겹모음 ㅗ+ㅏ→ㅘ
         assert_eq!(layout.combine(Category::Jung, 0x1169, 0x1161), Some(0x116A));
         // 겹받침 ㄹ+ㅅ→ㄽ (종성)
         assert_eq!(layout.combine(Category::Jong, 0x11AF, 0x11BA), Some(0x11B3));
 
         // 가상 단위
-        assert_eq!(layout.virtual_units.get(&128), Some(&Jamo::new(Category::Jung, 0x1169)));
-        assert_eq!(layout.virtual_units.get(&130), Some(&Jamo::new(Category::Jung, 0x1173)));
+        assert_eq!(
+            layout.virtual_units.get(&128),
+            Some(&Jamo::new(Category::Jung, 0x1169))
+        );
+        assert_eq!(
+            layout.virtual_units.get(&130),
+            Some(&Jamo::new(Category::Jung, 0x1173))
+        );
 
         // 홑낱자 출력
-        assert_eq!(layout.standalone(Jamo::new(Category::Cho, 0x1100)), Some('ㄱ'));
-        assert_eq!(layout.standalone(Jamo::new(Category::Jong, 0x11A8)), Some('ㄱ'));
+        assert_eq!(
+            layout.standalone(Jamo::new(Category::Cho, 0x1100)),
+            Some('ㄱ')
+        );
+        assert_eq!(
+            layout.standalone(Jamo::new(Category::Jong, 0x11A8)),
+            Some('ㄱ')
+        );
     }
 }

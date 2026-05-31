@@ -77,10 +77,16 @@ pub const JONG_COMPAT: [u32; 28] = [
 ];
 
 fn cho_cp_for_compat(compat: u32) -> Option<u32> {
-    CHO_COMPAT.iter().position(|&c| c == compat).map(|i| jamo::CHO[i])
+    CHO_COMPAT
+        .iter()
+        .position(|&c| c == compat)
+        .map(|i| jamo::CHO[i])
 }
 fn jung_cp_for_compat(compat: u32) -> Option<u32> {
-    JUNG_COMPAT.iter().position(|&c| c == compat).map(|i| jamo::JUNG[i])
+    JUNG_COMPAT
+        .iter()
+        .position(|&c| c == compat)
+        .map(|i| jamo::JUNG[i])
 }
 fn jong_cp_for_compat(compat: u32) -> Option<u32> {
     // 인덱스 0 (받침 없음)은 제외.
@@ -160,14 +166,13 @@ fn mnemonic_to_compat(core: &str) -> Option<u32> {
 /// 니모닉을 단위로 해석. `ctx` 가 주어지면(UnitMix 처럼) 그 위치를 강제하고, 없으면
 /// 밑줄 위치(`_X`=종성, `X_`=초성/모음)와 글자 정체로 추론한다.
 pub fn resolve_mnemonic(s: &str, ctx: Option<Category>) -> Option<Unit> {
-    let (core, pos_category): (&str, Option<Category>) =
-        if let Some(rest) = s.strip_prefix('_') {
-            (rest, Some(Category::Jong))
-        } else if let Some(rest) = s.strip_suffix('_') {
-            (rest, None) // 초성 또는 모음 (글자 정체로 결정)
-        } else {
-            (s, None)
-        };
+    let (core, pos_category): (&str, Option<Category>) = if let Some(rest) = s.strip_prefix('_') {
+        (rest, Some(Category::Jong))
+    } else if let Some(rest) = s.strip_suffix('_') {
+        (rest, None) // 초성 또는 모음 (글자 정체로 결정)
+    } else {
+        (s, None)
+    };
     let compat = mnemonic_to_compat(core)?;
     let category = ctx.or(pos_category).unwrap_or_else(|| {
         if is_vowel_compat(compat) {
@@ -245,20 +250,44 @@ mod tests {
     #[test]
     fn keytable_mnemonics() {
         // 초성: k=G_ → ㄱ 초성 U+1100
-        assert_eq!(jamo_of(resolve_mnemonic("G_", None).unwrap()), Jamo::new(Category::Cho, 0x1100));
+        assert_eq!(
+            jamo_of(resolve_mnemonic("G_", None).unwrap()),
+            Jamo::new(Category::Cho, 0x1100)
+        );
         // 종성: x=_G → ㄱ 종성 U+11A8
-        assert_eq!(jamo_of(resolve_mnemonic("_G", None).unwrap()), Jamo::new(Category::Jong, 0x11A8));
+        assert_eq!(
+            jamo_of(resolve_mnemonic("_G", None).unwrap()),
+            Jamo::new(Category::Jong, 0x11A8)
+        );
         // 중성: f=A_ → ㅏ U+1161, / = O_ → ㅗ U+1169
-        assert_eq!(jamo_of(resolve_mnemonic("A_", None).unwrap()), Jamo::new(Category::Jung, 0x1161));
-        assert_eq!(jamo_of(resolve_mnemonic("O_", None).unwrap()), Jamo::new(Category::Jung, 0x1169));
+        assert_eq!(
+            jamo_of(resolve_mnemonic("A_", None).unwrap()),
+            Jamo::new(Category::Jung, 0x1161)
+        );
+        assert_eq!(
+            jamo_of(resolve_mnemonic("O_", None).unwrap()),
+            Jamo::new(Category::Jung, 0x1169)
+        );
         // 바른 중성 bare: 8=EUI → ㅢ U+1174
-        assert_eq!(jamo_of(resolve_mnemonic("EUI", None).unwrap()), Jamo::new(Category::Jung, 0x1174));
+        assert_eq!(
+            jamo_of(resolve_mnemonic("EUI", None).unwrap()),
+            Jamo::new(Category::Jung, 0x1174)
+        );
         // 겹받침 종성: @=_RG → ㄺ U+11B0
-        assert_eq!(jamo_of(resolve_mnemonic("_RG", None).unwrap()), Jamo::new(Category::Jong, 0x11B0));
+        assert_eq!(
+            jamo_of(resolve_mnemonic("_RG", None).unwrap()),
+            Jamo::new(Category::Jong, 0x11B0)
+        );
         // 초성 ㅇ: j=Q_ → U+110B
-        assert_eq!(jamo_of(resolve_mnemonic("Q_", None).unwrap()), Jamo::new(Category::Cho, 0x110B));
+        assert_eq!(
+            jamo_of(resolve_mnemonic("Q_", None).unwrap()),
+            Jamo::new(Category::Cho, 0x110B)
+        );
         // 종성 ㅇ: a=_Q → U+11BC
-        assert_eq!(jamo_of(resolve_mnemonic("_Q", None).unwrap()), Jamo::new(Category::Jong, 0x11BC));
+        assert_eq!(
+            jamo_of(resolve_mnemonic("_Q", None).unwrap()),
+            Jamo::new(Category::Jong, 0x11BC)
+        );
     }
 
     #[test]
@@ -315,9 +344,21 @@ mod tests {
 
     #[test]
     fn default_compat_roundtrip() {
-        assert_eq!(Jamo::new(Category::Cho, 0x1100).default_compat(), Some(0x3131));
-        assert_eq!(Jamo::new(Category::Jong, 0x11A8).default_compat(), Some(0x3131));
-        assert_eq!(Jamo::new(Category::Jung, 0x1161).default_compat(), Some(0x314F));
-        assert_eq!(Jamo::new(Category::Jong, 0x11B0).default_compat(), Some(0x313A));
+        assert_eq!(
+            Jamo::new(Category::Cho, 0x1100).default_compat(),
+            Some(0x3131)
+        );
+        assert_eq!(
+            Jamo::new(Category::Jong, 0x11A8).default_compat(),
+            Some(0x3131)
+        );
+        assert_eq!(
+            Jamo::new(Category::Jung, 0x1161).default_compat(),
+            Some(0x314F)
+        );
+        assert_eq!(
+            Jamo::new(Category::Jong, 0x11B0).default_compat(),
+            Some(0x313A)
+        );
     }
 }

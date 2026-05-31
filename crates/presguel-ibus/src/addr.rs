@@ -50,8 +50,15 @@ pub fn parse_address_file(content: &str) -> Option<String> {
 
 /// 주소 파일 경로 `$XDG_CONFIG_HOME/ibus/bus/<machine-id>-<host>-<display>` 를 만든다.
 pub fn address_file_path() -> Result<PathBuf, String> {
-    let config_home = std::env::var("XDG_CONFIG_HOME").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))
+    let config_home = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".config"))
+        })
         .ok_or_else(|| "XDG_CONFIG_HOME/HOME 둘 다 없음".to_string())?;
 
     let machine_id = read_machine_id()?;
@@ -113,7 +120,10 @@ mod tests {
     #[test]
     fn x_display_parsing() {
         assert_eq!(parse_x_display(":0"), ("unix".to_string(), "0".to_string()));
-        assert_eq!(parse_x_display(":10.0"), ("unix".to_string(), "10".to_string()));
+        assert_eq!(
+            parse_x_display(":10.0"),
+            ("unix".to_string(), "10".to_string())
+        );
         assert_eq!(
             parse_x_display("localhost:10.0"),
             ("localhost".to_string(), "10".to_string())

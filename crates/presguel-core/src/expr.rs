@@ -151,7 +151,10 @@ impl Expr {
             Expr::Int(n) => Value::Int(*n),
             Expr::Unit(u) => Value::Unit(*u),
             Expr::Command(c) => Value::Command(*c),
-            Expr::Var(name) => Value::Int(ctx.var(name).ok_or_else(|| ExprError::UnknownVar(name.clone()))?),
+            Expr::Var(name) => Value::Int(
+                ctx.var(name)
+                    .ok_or_else(|| ExprError::UnknownVar(name.clone()))?,
+            ),
             Expr::Unary(op, x) => {
                 let v = x.eval(ctx)?.as_int()?;
                 Value::Int(match op {
@@ -264,7 +267,8 @@ fn lex(src: &str) -> Result<Vec<Tok>, ExprError> {
                     i += 1;
                 }
                 let s: String = chars[start + 2..i].iter().collect();
-                let n = i64::from_str_radix(&s, 16).map_err(|_| ExprError::UnexpectedToken(s.clone()))?;
+                let n = i64::from_str_radix(&s, 16)
+                    .map_err(|_| ExprError::UnexpectedToken(s.clone()))?;
                 out.push(Tok::Num(n));
             } else {
                 i += 1;
@@ -272,7 +276,9 @@ fn lex(src: &str) -> Result<Vec<Tok>, ExprError> {
                     i += 1;
                 }
                 let s: String = chars[start..i].iter().collect();
-                let n: i64 = s.parse().map_err(|_| ExprError::UnexpectedToken(s.clone()))?;
+                let n: i64 = s
+                    .parse()
+                    .map_err(|_| ExprError::UnexpectedToken(s.clone()))?;
                 out.push(Tok::Num(n));
             }
             continue;
@@ -449,7 +455,8 @@ impl Parser {
                 if tag == "C0" {
                     Ok(Expr::Command(n))
                 } else {
-                    let u = unit::resolve_numeric(n).ok_or_else(|| ExprError::BadUnit(format!("0x{n:X}")))?;
+                    let u = unit::resolve_numeric(n)
+                        .ok_or_else(|| ExprError::BadUnit(format!("0x{n:X}")))?;
                     Ok(Expr::Unit(u))
                 }
             }
@@ -508,9 +515,15 @@ mod tests {
         assert_eq!(ev("500", &ctx), Value::Int(500));
         assert_eq!(ev("-2", &ctx), Value::Int(-2));
         // C 우선순위: << 가 ^ 보다 강함 → 119 ^ (1<<5) = 119 ^ 32 = 87 = 'W'
-        let shifted = Ctx { p: 1, ..Default::default() };
+        let shifted = Ctx {
+            p: 1,
+            ..Default::default()
+        };
         assert_eq!(ev("119^(P&1)<<5", &shifted), Value::Int('W' as i64));
-        let unshifted = Ctx { p: 0, ..Default::default() };
+        let unshifted = Ctx {
+            p: 0,
+            ..Default::default()
+        };
         assert_eq!(ev("119^(P&1)<<5", &unshifted), Value::Int('w' as i64));
     }
 
@@ -518,9 +531,15 @@ mod tests {
     fn tagged_units() {
         let ctx = Ctx::default();
         // H3|_GG → 종성 ㄲ
-        assert_eq!(ev("H3|_GG", &ctx), Value::Unit(Unit::Jamo(Jamo::new(Category::Jong, 0x11A9))));
+        assert_eq!(
+            ev("H3|_GG", &ctx),
+            Value::Unit(Unit::Jamo(Jamo::new(Category::Jong, 0x11A9)))
+        );
         // H3|O_ → 중성 ㅗ
-        assert_eq!(ev("H3|O_", &ctx), Value::Unit(Unit::Jamo(Jamo::new(Category::Jung, 0x1169))));
+        assert_eq!(
+            ev("H3|O_", &ctx),
+            Value::Unit(Unit::Jamo(Jamo::new(Category::Jung, 0x1169)))
+        );
         // H3|0x820000 → 가상 단위 130
         assert_eq!(ev("H3|0x820000", &ctx), Value::Unit(Unit::Virtual(130)));
         // C0|0x82 → 한자 명령
@@ -530,15 +549,24 @@ mod tests {
     #[test]
     fn ternary_with_t() {
         // T ? H3|_J : 0x23  (조합 중이면 종성 ㅈ, 아니면 '#')
-        let composing = Ctx { t: 1, ..Default::default() };
+        let composing = Ctx {
+            t: 1,
+            ..Default::default()
+        };
         assert_eq!(
             ev("T ? H3|_J : 0x23", &composing),
             Value::Unit(Unit::Jamo(Jamo::new(Category::Jong, 0x11BD)))
         );
-        let idle = Ctx { t: 0, ..Default::default() };
+        let idle = Ctx {
+            t: 0,
+            ..Default::default()
+        };
         assert_eq!(ev("T ? H3|_J : 0x23", &idle), Value::Int(0x23));
         // T ? H3|0x1F4 : 0x24  ($ 키: 조합 중이면 갈마들이 토글)
-        assert_eq!(ev("T ? H3|0x1F4 : 0x24", &composing), Value::Unit(Unit::Toggle));
+        assert_eq!(
+            ev("T ? H3|0x1F4 : 0x24", &composing),
+            Value::Unit(Unit::Toggle)
+        );
         assert_eq!(ev("T ? H3|0x1F4 : 0x24", &idle), Value::Int(0x24));
     }
 
@@ -547,11 +575,38 @@ mod tests {
         // 상태 2 식: A&&A!=500 ? 0 : B||C||A==500 ? 2 : -2
         let src = "A&&A!=500 ? 0 : B||C||A==500 ? 2 : -2";
         // 들어온 게 초성(A!=0,!=500) → 0
-        assert_eq!(ev(src, &Ctx { a: 0x1100, ..Default::default() }), Value::Int(0));
+        assert_eq!(
+            ev(
+                src,
+                &Ctx {
+                    a: 0x1100,
+                    ..Default::default()
+                }
+            ),
+            Value::Int(0)
+        );
         // 들어온 게 종성(C!=0) → 2
-        assert_eq!(ev(src, &Ctx { c: 0x11A8, ..Default::default() }), Value::Int(2));
+        assert_eq!(
+            ev(
+                src,
+                &Ctx {
+                    c: 0x11A8,
+                    ..Default::default()
+                }
+            ),
+            Value::Int(2)
+        );
         // 토글(A==500) → 2
-        assert_eq!(ev(src, &Ctx { a: 500, ..Default::default() }), Value::Int(2));
+        assert_eq!(
+            ev(
+                src,
+                &Ctx {
+                    a: 500,
+                    ..Default::default()
+                }
+            ),
+            Value::Int(2)
+        );
         // 아무 낱자도 아님 → -2
         assert_eq!(ev(src, &Ctx::default()), Value::Int(-2));
     }

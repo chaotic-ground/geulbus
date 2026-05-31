@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use presguel_core::expr::{Ctx, Expr, Value as ExprValue};
 use presguel_core::{us_qwerty_ascii, Config, Engine as Core};
 use zbus::object_server::SignalEmitter;
-use zbus::{fdo, interface};
 use zbus::zvariant::Value;
+use zbus::{fdo, interface};
 
 use crate::ibus_property::{make_input_mode_property, make_prop_list};
 use crate::ibus_text::{make_ibus_text, make_preedit_text};
@@ -56,12 +56,12 @@ fn is_modifier_keysym(keyval: u32) -> bool {
 /// 날개셋 ShortcutTable 의 가상키(VK_*) 이름 → X11/ibus 키심.
 fn vk_to_keysyms(vk: &str) -> &'static [u32] {
     match vk {
-        "VK_HANGUL" => &[0xff31],        // Hangul (한/영)
-        "VK_HANJA" => &[0xff34],         // Hangul_Hanja (한자)
-        "VK_CAPITAL" => &[0xffe5],       // Caps_Lock
+        "VK_HANGUL" => &[0xff31],  // Hangul (한/영)
+        "VK_HANJA" => &[0xff34],   // Hangul_Hanja (한자)
+        "VK_CAPITAL" => &[0xffe5], // Caps_Lock
         "VK_SPACE" => &[0x20],
-        "VK_RMENU" => &[0xffea],         // Alt_R (오른쪽 Alt, 한/영 대용)
-        "VK_RCONTROL" => &[0xffe4],      // Control_R (한자 대용)
+        "VK_RMENU" => &[0xffea],    // Alt_R (오른쪽 Alt, 한/영 대용)
+        "VK_RCONTROL" => &[0xffe4], // Control_R (한자 대용)
         _ => &[],
     }
 }
@@ -140,11 +140,15 @@ impl IBusEngine {
                         entries.push(Mode::Latin { keys: layout.keys });
                     }
                 }
-                Err(_) => entries.push(Mode::Latin { keys: HashMap::new() }),
+                Err(_) => entries.push(Mode::Latin {
+                    keys: HashMap::new(),
+                }),
             }
         }
         if entries.is_empty() {
-            entries.push(Mode::Latin { keys: HashMap::new() });
+            entries.push(Mode::Latin {
+                keys: HashMap::new(),
+            });
         }
         let last = entries.len() - 1;
 
@@ -214,12 +218,22 @@ impl IBusEngine {
     /// - 전체 모드: ShortcutTable value 식(예 `!A`, A=현재 항목)을 평가. `!A`→0이면 1, 아니면 0.
     fn switch_target(&self, keyval: u32) -> usize {
         if self.settings.simple_mode {
-            return if self.current == self.hangul_idx { self.latin_idx } else { self.hangul_idx };
+            return if self.current == self.hangul_idx {
+                self.latin_idx
+            } else {
+                self.hangul_idx
+            };
         }
         let len = self.entries.len() as i64;
         self.ime_switch
             .get(&keyval)
-            .and_then(|e| e.eval(&Ctx { a: self.current as i64, ..Default::default() }).ok())
+            .and_then(|e| {
+                e.eval(&Ctx {
+                    a: self.current as i64,
+                    ..Default::default()
+                })
+                .ok()
+            })
             .and_then(|v| match v {
                 ExprValue::Int(t) => Some(t),
                 _ => None,
@@ -273,12 +287,17 @@ impl IBusEngine {
     /// 입력 모드 속성을 등록(패널이 심볼을 알도록). focus_in/enable 시 호출.
     /// 레이블("Presguel 설정")은 패널 컨텍스트 메뉴에 뜨며, 누르면 property_activate 가 설정창을 연다.
     async fn register_props(&self, se: &SignalEmitter<'_>) {
-        let _ = Self::register_properties(se, make_prop_list(&self.mode_symbol(), "Presguel 설정")).await;
+        let _ = Self::register_properties(se, make_prop_list(&self.mode_symbol(), "Presguel 설정"))
+            .await;
     }
 
     /// 모드가 바뀌었을 때 패널 심볼을 갱신.
     async fn update_indicator(&self, se: &SignalEmitter<'_>) {
-        let _ = Self::update_property(se, make_input_mode_property(&self.mode_symbol(), "Presguel 설정")).await;
+        let _ = Self::update_property(
+            se,
+            make_input_mode_property(&self.mode_symbol(), "Presguel 설정"),
+        )
+        .await;
     }
 
     /// 키 이벤트를 분류한다(순수 함수). `process_key_event` 가 이 결과로 분기한다.
@@ -326,7 +345,9 @@ impl IBusEngine {
         // 진단: PRESGUEL_DEBUG_KEYS=1 이면 받은 keyval/keycode/state 를 stderr 로 찍는다.
         // presguel 활성 시 어떤 XKB 레이아웃 기준 keysym 이 오는지 확인용(드보락 vs us).
         if debug_keys_enabled() {
-            let ch = char::from_u32(keyval).filter(|c| !c.is_control()).unwrap_or(' ');
+            let ch = char::from_u32(keyval)
+                .filter(|c| !c.is_control())
+                .unwrap_or(' ');
             eprintln!(
                 "presguel keyev: keyval=0x{keyval:04x} ({ch:?})  keycode=0x{keycode:x} ({keycode})  state=0x{state:x}"
             );
@@ -390,9 +411,13 @@ impl IBusEngine {
                     Mode::Latin { keys } => {
                         if let KeyClass::Printable(ascii) = class {
                             if let Some(expr) = keys.get(&(ascii as u32)) {
-                                let ctx = Ctx { p: caps as i64, ..Default::default() };
+                                let ctx = Ctx {
+                                    p: caps as i64,
+                                    ..Default::default()
+                                };
                                 if let Ok(ExprValue::Int(n)) = expr.eval(&ctx) {
-                                    if let Some(ch) = u32::try_from(n).ok().and_then(char::from_u32) {
+                                    if let Some(ch) = u32::try_from(n).ok().and_then(char::from_u32)
+                                    {
                                         Self::emit(&se, &ch.to_string(), "").await;
                                         return Ok(true);
                                     }
@@ -413,7 +438,10 @@ impl IBusEngine {
         Ok(())
     }
 
-    async fn focus_out(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
+    async fn focus_out(
+        &mut self,
+        #[zbus(signal_emitter)] se: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
         self.flush_current(&se).await;
         Ok(())
     }
@@ -447,9 +475,7 @@ impl IBusEngine {
         if name == "InputMode" {
             let _ = std::process::Command::new("presguel-setup")
                 .spawn()
-                .or_else(|_| {
-                    std::process::Command::new("/usr/local/bin/presguel-setup").spawn()
-                });
+                .or_else(|_| std::process::Command::new("/usr/local/bin/presguel-setup").spawn());
         }
     }
 
@@ -539,7 +565,11 @@ mod tests {
         let cfg = Config::parse(MINI).unwrap();
         let e = IBusEngine::with_settings(
             &cfg,
-            Settings { simple_mode: true, hangul_entry: 0, latin_entry: 0 },
+            Settings {
+                simple_mode: true,
+                hangul_entry: 0,
+                latin_entry: 0,
+            },
         );
         assert_eq!(e.mode_symbol(), "가");
     }
@@ -566,7 +596,11 @@ mod tests {
     #[test]
     fn apply_simple_mode_sets_current() {
         let cfg = Config::parse(MINI).unwrap();
-        let st = Settings { simple_mode: true, hangul_entry: 0, latin_entry: 0 };
+        let st = Settings {
+            simple_mode: true,
+            hangul_entry: 0,
+            latin_entry: 0,
+        };
         let e = IBusEngine::with_settings(&cfg, st);
         assert!(e.settings.simple_mode);
         assert_eq!(e.current, 0); // 간단 모드 → 한글 항목에서 시작
@@ -579,7 +613,11 @@ mod tests {
         let before = e.settings;
         // settings 가 같으면(파일이 default 와 동일하거나 없으면) 변화 감지 안 함.
         // 여기선 apply_settings 로 직접 바꿔 동작만 확인.
-        e.apply_settings(Settings { simple_mode: true, hangul_entry: 0, latin_entry: 0 });
+        e.apply_settings(Settings {
+            simple_mode: true,
+            hangul_entry: 0,
+            latin_entry: 0,
+        });
         assert_ne!(before.simple_mode, e.settings.simple_mode);
         assert!(e.settings.simple_mode);
     }
@@ -600,7 +638,13 @@ mod tests {
         let e = engine();
         // ShortcutTable value="!A" → A=현재 항목. 0이면 1, 아니면 0.
         let expr = e.ime_switch.get(&0xffe5).expect("capslock switch expr");
-        let f = |cur: i64| match expr.eval(&Ctx { a: cur, ..Default::default() }).unwrap() {
+        let f = |cur: i64| match expr
+            .eval(&Ctx {
+                a: cur,
+                ..Default::default()
+            })
+            .unwrap()
+        {
             EV::Int(t) => t,
             other => panic!("expected int, got {other:?}"),
         };
@@ -632,18 +676,27 @@ mod tests {
     #[test]
     fn at_key_with_shift_is_printable() {
         // 실키 Shift+물리2(keycode 3) → US-QWERTY '@' 로 분류 → 세벌식 ㄺ 조합 가능.
-        assert_eq!(engine().classify(0x40, 3, SHIFT_MASK), KeyClass::Printable(b'@'));
+        assert_eq!(
+            engine().classify(0x40, 3, SHIFT_MASK),
+            KeyClass::Printable(b'@')
+        );
     }
 
     #[test]
     fn ctrl_combo_is_shortcut() {
         // Ctrl+물리C(keycode 46) → 단축키(통과). keycode 있어도 ShortcutCombo 가 우선.
-        assert_eq!(engine().classify(b'c' as u32, 46, CONTROL_MASK), KeyClass::ShortcutCombo);
+        assert_eq!(
+            engine().classify(b'c' as u32, 46, CONTROL_MASK),
+            KeyClass::ShortcutCombo
+        );
     }
 
     #[test]
     fn release_of_normal_key_ignored() {
-        assert_eq!(engine().classify(b'k' as u32, 37, RELEASE_MASK), KeyClass::Release);
+        assert_eq!(
+            engine().classify(b'k' as u32, 37, RELEASE_MASK),
+            KeyClass::Release
+        );
     }
 
     #[test]

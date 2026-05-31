@@ -18,7 +18,11 @@ pub struct Factory {
 
 impl Factory {
     pub fn new(conn: Connection, config: Arc<Config>) -> Self {
-        Self { conn, config, next: 0 }
+        Self {
+            conn,
+            config,
+            next: 0,
+        }
     }
 }
 

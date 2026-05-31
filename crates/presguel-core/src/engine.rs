@@ -49,7 +49,11 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(layout: Layout) -> Self {
-        Self { layout, cur: Syllable::default(), history: Vec::new() }
+        Self {
+            layout,
+            cur: Syllable::default(),
+            history: Vec::new(),
+        }
     }
 
     pub fn layout(&self) -> &Layout {
@@ -150,7 +154,10 @@ impl Engine {
         }
         // 홑초성만 있는 상태: 된소리 결합 시도
         if self.cur.cho.is_some() && self.cur.jung.is_none() && self.cur.jong.is_none() {
-            if let Some(r) = self.layout.combine(Category::Cho, self.cur.cho.unwrap(), cp) {
+            if let Some(r) = self
+                .layout
+                .combine(Category::Cho, self.cur.cho.unwrap(), cp)
+            {
                 self.cur.cho = Some(r);
                 return String::new();
             }
@@ -169,7 +176,10 @@ impl Engine {
         }
         // 중성이 있고 받침이 없으면 겹모음 결합 시도
         if self.cur.jung.is_some() && self.cur.jong.is_none() {
-            if let Some(r) = self.layout.combine(Category::Jung, self.cur.jung.unwrap(), cp) {
+            if let Some(r) = self
+                .layout
+                .combine(Category::Jung, self.cur.jung.unwrap(), cp)
+            {
                 self.cur.jung = Some(r);
                 return String::new();
             }
@@ -188,14 +198,20 @@ impl Engine {
         }
         // 받침이 이미 있으면 겹받침 결합 시도
         if self.cur.jong.is_some() {
-            if let Some(r) = self.layout.combine(Category::Jong, self.cur.jong.unwrap(), cp) {
+            if let Some(r) = self
+                .layout
+                .combine(Category::Jong, self.cur.jong.unwrap(), cp)
+            {
                 self.cur.jong = Some(r);
                 return String::new();
             }
         }
         // 붙일 곳이 없으면 현재 음절 확정 후 홑받침(홑낱자)로 시작
         let out = self.commit_current();
-        self.cur = Syllable { jong: Some(cp), ..Syllable::default() };
+        self.cur = Syllable {
+            jong: Some(cp),
+            ..Syllable::default()
+        };
         out
     }
 
@@ -248,15 +264,27 @@ impl Engine {
             None => {
                 // 배열에 없는 글쇠 → 현재 음절 확정 후 원래 키를 응용으로 넘김
                 let commit = self.commit_and_clear();
-                return KeyOutcome { commit, preedit: String::new(), consumed: false };
+                return KeyOutcome {
+                    commit,
+                    preedit: String::new(),
+                    consumed: false,
+                };
             }
         };
-        let ctx = Ctx { t: self.t_state(), p: caps as i64, ..Default::default() };
+        let ctx = Ctx {
+            t: self.t_state(),
+            p: caps as i64,
+            ..Default::default()
+        };
         let val = match expr.eval(&ctx) {
             Ok(v) => v,
             Err(_) => {
                 let commit = self.commit_and_clear();
-                return KeyOutcome { commit, preedit: String::new(), consumed: false };
+                return KeyOutcome {
+                    commit,
+                    preedit: String::new(),
+                    consumed: false,
+                };
             }
         };
         self.dispatch(val)
@@ -266,7 +294,11 @@ impl Engine {
         match val {
             Value::Unit(u) => {
                 let commit = self.feed_unit(u);
-                KeyOutcome { commit, preedit: self.preedit(), consumed: true }
+                KeyOutcome {
+                    commit,
+                    preedit: self.preedit(),
+                    consumed: true,
+                }
             }
             Value::Int(n) => {
                 // 문자(기호/숫자) 리터럴: 현재 음절 확정 후 그 문자를 확정.
@@ -274,12 +306,20 @@ impl Engine {
                 if let Some(ch) = u32::try_from(n).ok().and_then(char::from_u32) {
                     commit.push(ch);
                 }
-                KeyOutcome { commit, preedit: String::new(), consumed: true }
+                KeyOutcome {
+                    commit,
+                    preedit: String::new(),
+                    consumed: true,
+                }
             }
             Value::Command(_cmd) => {
                 // 제어 명령(C0|): 현재는 현재 음절만 확정(한자 변환 등은 추후).
                 let commit = self.commit_and_clear();
-                KeyOutcome { commit, preedit: self.preedit(), consumed: true }
+                KeyOutcome {
+                    commit,
+                    preedit: self.preedit(),
+                    consumed: true,
+                }
             }
         }
     }
@@ -290,7 +330,11 @@ impl Engine {
     pub fn backspace(&mut self) -> KeyOutcome {
         if self.cur.is_empty() {
             // 조합 중이 아니면 응용이 직접 지우도록 넘김
-            return KeyOutcome { commit: String::new(), preedit: String::new(), consumed: false };
+            return KeyOutcome {
+                commit: String::new(),
+                preedit: String::new(),
+                consumed: false,
+            };
         }
         self.history.pop();
         let hist = std::mem::take(&mut self.history);
@@ -299,7 +343,11 @@ impl Engine {
             // 한 음절 안의 단위들이므로 재생 중 확정은 발생하지 않는다.
             let _ = self.feed_unit(u);
         }
-        KeyOutcome { commit: String::new(), preedit: self.preedit(), consumed: true }
+        KeyOutcome {
+            commit: String::new(),
+            preedit: self.preedit(),
+            consumed: true,
+        }
     }
 }
 
