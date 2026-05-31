@@ -101,7 +101,7 @@ impl Mode {
 }
 
 /// IBus 엔진 인스턴스 하나. 설정의 모든 입력 항목을 담고 IME_SWITCH 로 순환 전환한다.
-/// 패널 표시기는 날개셋처럼 `접두+항목번호`(예: `가0`, `A1`)로 보인다.
+/// 패널 표시기는 날개셋처럼 `접두+항목번호`(예: `글0`, `A1`)로 보인다.
 pub struct IBusEngine {
     entries: Vec<Mode>,
     /// 현재 활성 입력 항목 인덱스.
@@ -113,10 +113,8 @@ pub struct IBusEngine {
     ime_switch: HashMap<u32, Expr>,
     /// 마지막으로 반영한 사용자 설정(config.ini). focus_in/enable 마다 다시 읽어 즉시 반영.
     settings: Settings,
-    /// 간단 모드에서 쓸 한글 항목 인덱스(settings 에서 파생, 항목 수로 클램프).
-    hangul_idx: usize,
-    /// 간단 모드에서 한/영 토글의 상대 항목 인덱스.
-    latin_idx: usize,
+    /// 항목 직접 지정 모드에서 쓸 항목 인덱스(settings 에서 파생, 항목 수로 클램프).
+    pick_idx: usize,
 }
 
 impl IBusEngine {
@@ -175,8 +173,7 @@ impl IBusEngine {
             default_entry,
             ime_switch,
             settings: Settings::default(), // apply_settings 가 곧 덮어쓴다
-            hangul_idx: 0,
-            latin_idx: 0,
+            pick_idx: 0,
         };
         engine.apply_settings(st);
         engine
@@ -185,18 +182,14 @@ impl IBusEngine {
     /// 사용자 설정을 반영한다(파생 필드와 현재 항목 보정). 항상 적용한다.
     fn apply_settings(&mut self, st: Settings) {
         let last = self.entries.len() - 1;
-        let was_simple = self.settings.simple_mode;
-        let hangul_idx = st.hangul_entry.min(last);
-        let latin_idx = st.latin_entry.min(last);
-        self.hangul_idx = hangul_idx;
-        self.latin_idx = latin_idx;
-        if st.simple_mode {
-            // 간단 모드 진입/항목 변경 시 현재 항목을 {한글, 영문} 안으로 보정.
-            if !was_simple || (self.current != hangul_idx && self.current != latin_idx) {
-                self.current = hangul_idx;
-            }
-        } else if was_simple {
-            // 간단 → 전체 전환: 기본 항목으로.
+        let was_pick = self.settings.pick_entry;
+        let pick_idx = st.entry.min(last);
+        self.pick_idx = pick_idx;
+        if st.pick_entry {
+            // 항목 직접 지정: 고른 항목으로 고정(전환 없음).
+            self.current = pick_idx;
+        } else if was_pick {
+            // 직접 지정 → 전체 전환: 기본 항목으로.
             self.current = self.default_entry.min(last);
         }
         self.settings = st;
@@ -214,15 +207,11 @@ impl IBusEngine {
     }
 
     /// IME_SWITCH 키를 눌렀을 때 전환할 대상 항목 인덱스.
-    /// - 간단 모드: 한글 항목 ↔ 영문 항목만 오간다(설정에서 고른 둘).
-    /// - 전체 모드: ShortcutTable value 식(예 `!A`, A=현재 항목)을 평가. `!A`→0이면 1, 아니면 0.
+    /// 항목 직접 지정 모드에서는 전환하지 않고 현재 항목에 머문다(전환 단축글쇠 사용 불가).
+    /// 그 외에는 ShortcutTable value 식(예 `!A`, A=현재 항목)을 평가. `!A`→0이면 1, 아니면 0.
     fn switch_target(&self, keyval: u32) -> usize {
-        if self.settings.simple_mode {
-            return if self.current == self.hangul_idx {
-                self.latin_idx
-            } else {
-                self.hangul_idx
-            };
+        if self.settings.pick_entry {
+            return self.current;
         }
         let len = self.entries.len() as i64;
         self.ime_switch
@@ -274,10 +263,10 @@ impl IBusEngine {
     }
 
     /// 패널 심볼: 접두(한글=글, 로마자/직접=A)에 항목 번호를 아래첨자로 붙인다(예: "글₀").
-    /// 간단 모드에서는 한글/영문 둘뿐이라 번호 없이 접두만 보인다(예: "글", "A").
+    /// 항목 직접 지정 모드에서는 항목이 하나로 고정이라 번호 없이 접두만 보인다(예: "글", "A").
     fn mode_symbol(&self) -> String {
         let prefix = self.cur().symbol_prefix();
-        if self.settings.simple_mode {
+        if self.settings.pick_entry {
             prefix.to_string()
         } else {
             format!("{}{}", prefix, subscript_digits(self.current))
@@ -562,15 +551,14 @@ mod tests {
     }
 
     #[test]
-    fn mode_symbol_simple_has_no_number() {
-        // 간단 모드: 번호 없이 접두만.
+    fn mode_symbol_pick_has_no_number() {
+        // 항목 직접 지정 모드: 번호 없이 접두만.
         let cfg = Config::parse(MINI).unwrap();
         let e = IBusEngine::with_settings(
             &cfg,
             Settings {
-                simple_mode: true,
-                hangul_entry: 0,
-                latin_entry: 0,
+                pick_entry: true,
+                entry: 0,
                 shortcuts_enabled: true,
             },
         );
@@ -593,21 +581,35 @@ mod tests {
     #[test]
     fn default_settings_is_full_mode() {
         let e = engine();
-        assert!(!e.settings.simple_mode);
+        assert!(!e.settings.pick_entry);
     }
 
     #[test]
-    fn apply_simple_mode_sets_current() {
+    fn apply_pick_entry_sets_current() {
         let cfg = Config::parse(MINI).unwrap();
         let st = Settings {
-            simple_mode: true,
-            hangul_entry: 0,
-            latin_entry: 0,
+            pick_entry: true,
+            entry: 0,
             shortcuts_enabled: true,
         };
         let e = IBusEngine::with_settings(&cfg, st);
-        assert!(e.settings.simple_mode);
-        assert_eq!(e.current, 0); // 간단 모드 → 한글 항목에서 시작
+        assert!(e.settings.pick_entry);
+        assert_eq!(e.current, 0); // 직접 지정 → 고른 항목에서 고정
+    }
+
+    #[test]
+    fn pick_entry_disables_switch() {
+        // 항목 직접 지정 모드: 한/영 키를 눌러도 전환 대상이 현재 항목(=전환 없음).
+        let cfg = Config::parse(MINI).unwrap();
+        let e = IBusEngine::with_settings(
+            &cfg,
+            Settings {
+                pick_entry: true,
+                entry: 0,
+                shortcuts_enabled: true,
+            },
+        );
+        assert_eq!(e.switch_target(0xff31), e.current);
     }
 
     #[test]
@@ -618,13 +620,12 @@ mod tests {
         // settings 가 같으면(파일이 default 와 동일하거나 없으면) 변화 감지 안 함.
         // 여기선 apply_settings 로 직접 바꿔 동작만 확인.
         e.apply_settings(Settings {
-            simple_mode: true,
-            hangul_entry: 0,
-            latin_entry: 0,
+            pick_entry: true,
+            entry: 0,
             shortcuts_enabled: true,
         });
-        assert_ne!(before.simple_mode, e.settings.simple_mode);
-        assert!(e.settings.simple_mode);
+        assert_ne!(before.pick_entry, e.settings.pick_entry);
+        assert!(e.settings.pick_entry);
     }
 
     #[test]

@@ -4,13 +4,12 @@
 //! 단순 형식이라 의존성이 없고, Python 설정창도 쉽게 읽고 쓴다.
 //!
 //! ```ini
-//! # 간단 모드: 켜면 한글/영문 InputEntry 를 직접 지정한다.
-//! simple_mode = false
-//! # 간단 모드에서 쓸 한글 조합 InputEntry 인덱스.
-//! hangul_entry = 0
-//! # 그 한글 항목의 글쇠가 깔린 영문 배치 InputEntry 인덱스.
-//! # 단축키 조합(Ctrl/Alt/Super+키)을 이 배치로 변환해 응용에 넘긴다(예: 드보락).
-//! latin_entry = 1
+//! # 입력 항목 직접 지정: 켜면 아래에서 고른 InputEntry 하나만 쓴다(항목 전환 단축키 없음).
+//! # 끄면(기본) 날개셋 설정의 모든 InputEntry 를 쓰고, 항목 전환은 ShortcutTable 에
+//! # 등록된 IME_SWITCH 단축글쇠가 있을 때만 동작한다.
+//! pick_entry = false
+//! # pick_entry 가 켜졌을 때 쓸 InputEntry 인덱스.
+//! entry = 0
 //! # IME_SWITCH 단축글쇠(한/영 키 등)로 입력 항목을 전환할지. 끄면 그 키를 통과시킨다.
 //! shortcuts_enabled = true
 //! ```
@@ -20,26 +19,25 @@ use std::path::PathBuf;
 /// 파싱된 사용자 설정. 파일이 없거나 키가 빠지면 기본값(날개셋과 동일 동작).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
-    /// false(기본): 모든 InputEntry 를 읽어 날개셋과 똑같이 동작.
-    /// true: 아래 두 항목만 써서 단순하게 동작.
-    pub simple_mode: bool,
-    /// 간단 모드에서 쓸 한글 조합 InputEntry 인덱스.
-    pub hangul_entry: usize,
-    /// 간단 모드에서 단축키 조합을 변환할 기준 영문 배치 InputEntry 인덱스.
-    pub latin_entry: usize,
+    /// false(기본): 모든 InputEntry 를 읽어 날개셋과 똑같이 동작(항목 전환은 ShortcutTable
+    /// 의 IME_SWITCH 단축글쇠가 등록됐을 때만).
+    /// true: 아래 `entry` 하나만 써서 고정(항목 전환 단축글쇠 사용 불가).
+    pub pick_entry: bool,
+    /// `pick_entry` 가 켜졌을 때 쓸 InputEntry 인덱스(항목 수로 클램프).
+    pub entry: usize,
     /// IME_SWITCH 단축글쇠(한/영 키 등)로 입력 항목을 전환할지. 기본 켜짐.
     /// 끄면 그 키들을 가로채지 않고 통과시켜, 사용자가 엔진 밖(GNOME/XKB 등)에서
     /// 직접 바인딩할 수 있다. 참고: Wayland 에서 CapsLock 은 컴포지터가 직접 처리해
     /// IME 까지 오지 않으므로, 애초에 단축글쇠로 쓸 수 없다(직접 바인딩해야 함).
+    /// (`pick_entry` 가 켜지면 전환 자체가 없으므로 이 값은 무의미해진다.)
     pub shortcuts_enabled: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            simple_mode: false,
-            hangul_entry: 0,
-            latin_entry: 1,
+            pick_entry: false,
+            entry: 0,
             shortcuts_enabled: true,
         }
     }
@@ -87,19 +85,14 @@ impl Settings {
             };
             let (k, v) = (k.trim(), v.trim());
             match k {
-                "simple_mode" => {
+                "pick_entry" => {
                     if let Some(b) = parse_bool(v) {
-                        s.simple_mode = b;
+                        s.pick_entry = b;
                     }
                 }
-                "hangul_entry" => {
+                "entry" => {
                     if let Ok(n) = v.parse() {
-                        s.hangul_entry = n;
-                    }
-                }
-                "latin_entry" => {
-                    if let Ok(n) = v.parse() {
-                        s.latin_entry = n;
+                        s.entry = n;
                     }
                 }
                 "shortcuts_enabled" => {
@@ -129,22 +122,21 @@ mod tests {
     #[test]
     fn default_is_full_mode() {
         let s = Settings::default();
-        assert!(!s.simple_mode);
+        assert!(!s.pick_entry);
     }
 
     #[test]
     fn parse_basic() {
-        let s = Settings::parse("simple_mode = true\nhangul_entry=0\nlatin_entry = 1\n");
-        assert!(s.simple_mode);
-        assert_eq!(s.hangul_entry, 0);
-        assert_eq!(s.latin_entry, 1);
+        let s = Settings::parse("pick_entry = true\nentry = 2\n");
+        assert!(s.pick_entry);
+        assert_eq!(s.entry, 2);
     }
 
     #[test]
     fn parse_ignores_comments_and_unknown() {
-        let s = Settings::parse("# 주석\nsimple_mode=on\nfoo=bar\n\n");
-        assert!(s.simple_mode);
-        assert_eq!(s.hangul_entry, 0); // 기본값 유지
+        let s = Settings::parse("# 주석\npick_entry=on\nfoo=bar\n\n");
+        assert!(s.pick_entry);
+        assert_eq!(s.entry, 0); // 기본값 유지
     }
 
     #[test]
@@ -154,10 +146,10 @@ mod tests {
 
     #[test]
     fn bool_forms() {
-        assert!(Settings::parse("simple_mode=1").simple_mode);
-        assert!(Settings::parse("simple_mode=yes").simple_mode);
-        assert!(!Settings::parse("simple_mode=off").simple_mode);
-        assert!(!Settings::parse("simple_mode=garbage").simple_mode);
+        assert!(Settings::parse("pick_entry=1").pick_entry);
+        assert!(Settings::parse("pick_entry=yes").pick_entry);
+        assert!(!Settings::parse("pick_entry=off").pick_entry);
+        assert!(!Settings::parse("pick_entry=garbage").pick_entry);
     }
 
     #[test]

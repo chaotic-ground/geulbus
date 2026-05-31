@@ -43,9 +43,8 @@ def xml_path():
 def load_ini():
     """key=value 설정을 dict 로. 없으면 기본값."""
     cfg = {
-        "simple_mode": "false",
-        "hangul_entry": "0",
-        "latin_entry": "1",
+        "pick_entry": "false",
+        "entry": "0",
         "shortcuts_enabled": "true",
     }
     try:
@@ -61,16 +60,16 @@ def load_ini():
     return cfg
 
 
-def save_ini(simple, hangul_idx, latin_idx, shortcuts):
+def save_ini(pick, entry_idx, shortcuts):
     os.makedirs(config_dir(), exist_ok=True)
     body = (
         "# presguel 설정 (presguel-setup 가 생성). key=value 형식.\n"
-        "# simple_mode: 켜면 아래 두 항목만 써서 단순 동작. 끄면 모든 InputEntry(날개셋 동일).\n"
-        f"simple_mode = {'true' if simple else 'false'}\n"
-        "# 간단 모드에서 쓸 한글 InputEntry 인덱스.\n"
-        f"hangul_entry = {hangul_idx}\n"
-        "# 간단 모드에서 한/영 전환 시 쓸 영문 InputEntry 인덱스.\n"
-        f"latin_entry = {latin_idx}\n"
+        "# pick_entry: 켜면 아래에서 고른 항목 하나만 사용(항목 전환 단축글쇠 없음).\n"
+        "#            끄면 날개셋 설정의 모든 InputEntry 를 쓰고, 항목 전환은 ShortcutTable 의\n"
+        "#            IME_SWITCH 단축글쇠가 등록됐을 때만 동작.\n"
+        f"pick_entry = {'true' if pick else 'false'}\n"
+        "# pick_entry 가 켜졌을 때 쓸 InputEntry 인덱스.\n"
+        f"entry = {entry_idx}\n"
         "# 단축글쇠(한/영 키 등)로 입력 항목 전환. 끄면 그 키를 통과시켜 직접 바인딩 가능.\n"
         f"shortcuts_enabled = {'true' if shortcuts else 'false'}\n"
     )
@@ -135,40 +134,30 @@ class SetupWindow(Adw.ApplicationWindow):
         self.set_content(toolbar)
 
         group = Adw.PreferencesGroup(
-            title="입력 동작",
-            description="끄면 설정의 모든 입력 항목을 읽어 날개셋과 똑같이 동작합니다. "
-            "켜면 아래에서 고른 한글 항목과 영문 항목만 한/영 전환에 사용합니다.",
+            title="입력 항목",
+            description="끄면(기본) 날개셋 설정의 모든 입력 항목을 그대로 쓰고, 항목 전환은 "
+            "설정에 등록된 전환 단축글쇠로 합니다. 켜면 아래에서 고른 항목 하나만 사용합니다.",
         )
         page.add(group)
 
-        # 간단 모드 스위치 행.
-        self.simple_row = Adw.SwitchRow(
-            title="간단 모드",
-            subtitle="한글 / 영문 배치 항목을 직접 지정",
+        # 입력 항목 직접 지정 스위치 행.
+        self.pick_row = Adw.SwitchRow(
+            title="입력 항목 직접 지정",
+            subtitle="켜면 고른 항목 하나로 고정됩니다 (항목 전환 단축글쇠는 사용할 수 없게 됩니다)",
         )
-        self.simple_row.set_active(_to_bool(cfg.get("simple_mode", "false")))
-        self.simple_row.connect("notify::active", self.on_change)
-        group.add(self.simple_row)
+        self.pick_row.set_active(_to_bool(cfg.get("pick_entry", "false")))
+        self.pick_row.connect("notify::active", self.on_change)
+        group.add(self.pick_row)
 
-        # 한글 항목 콤보.
-        self.hangul_row = Adw.ComboRow(
-            title="한글 입력 항목",
-            subtitle="실제로 쓸 한글 자판",
+        # 사용할 항목 콤보.
+        self.entry_row = Adw.ComboRow(
+            title="사용할 입력 항목",
+            subtitle="직접 지정을 켰을 때 쓸 항목",
             model=Gtk.StringList.new(labels),
         )
-        self._set_combo(self.hangul_row, _to_int(cfg.get("hangul_entry", "0")))
-        self.hangul_row.connect("notify::selected", self.on_change)
-        group.add(self.hangul_row)
-
-        # 영문 항목 콤보(한/영 전환 시 영문으로 쓸 항목).
-        self.latin_row = Adw.ComboRow(
-            title="영문 입력 항목",
-            subtitle="한/영 전환 시 쓸 영문 항목",
-            model=Gtk.StringList.new(labels),
-        )
-        self._set_combo(self.latin_row, _to_int(cfg.get("latin_entry", "1")))
-        self.latin_row.connect("notify::selected", self.on_change)
-        group.add(self.latin_row)
+        self._set_combo(self.entry_row, _to_int(cfg.get("entry", "0")))
+        self.entry_row.connect("notify::selected", self.on_change)
+        group.add(self.entry_row)
 
         # 단축글쇠 사용 토글. 기본 켜짐. 끄면 한/영 키 등을 통과시켜 직접 바인딩 가능.
         sc_group = Adw.PreferencesGroup(
@@ -218,20 +207,20 @@ class SetupWindow(Adw.ApplicationWindow):
             row.set_sensitive(False)
 
     def _sync_sensitivity(self):
-        on = self.simple_row.get_active() and bool(self.entries)
-        self.hangul_row.set_sensitive(on)
-        self.latin_row.set_sensitive(on)
+        on = self.pick_row.get_active() and bool(self.entries)
+        self.entry_row.set_sensitive(on)
+        # 직접 지정을 켜면 항목 전환이 없으므로 단축글쇠 토글은 무의미해진다.
+        self.shortcuts_row.set_sensitive(not self.pick_row.get_active())
 
     def on_change(self, *_):
         """위젯이 바뀔 때마다 즉시 config.ini 저장(GNOME instant-apply)."""
         self._sync_sensitivity()
         if self._loading:
             return
-        simple = self.simple_row.get_active()
-        h = self.hangul_row.get_selected() if self.entries else 0
-        l = self.latin_row.get_selected() if self.entries else 1
+        pick = self.pick_row.get_active()
+        e = self.entry_row.get_selected() if self.entries else 0
         shortcuts = self.shortcuts_row.get_active()
-        save_ini(simple, h, l, shortcuts)
+        save_ini(pick, e, shortcuts)
 
 
 class SetupApp(Adw.Application):
