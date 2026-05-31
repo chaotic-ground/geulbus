@@ -11,11 +11,13 @@ AdwPreferencesGroup + AdwSwitchRow + AdwComboRow.
 설정은 ~/.config/presguel/config.ini (key=value) 에 저장한다(엔진과 같은 형식).
 드롭다운 항목은 ~/.config/presguel/nalgaeset.xml 의 InputEntry 들에서 읽는다.
 """
+
 import os
 import sys
 import xml.etree.ElementTree as ET
 
 import gi
+
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, Gio
@@ -27,16 +29,25 @@ def config_dir():
 
 
 def ini_path():
-    return os.environ.get("PRESGUEL_CONFIG_INI") or os.path.join(config_dir(), "config.ini")
+    return os.environ.get("PRESGUEL_CONFIG_INI") or os.path.join(
+        config_dir(), "config.ini"
+    )
 
 
 def xml_path():
-    return os.environ.get("PRESGUEL_CONFIG") or os.path.join(config_dir(), "nalgaeset.xml")
+    return os.environ.get("PRESGUEL_CONFIG") or os.path.join(
+        config_dir(), "nalgaeset.xml"
+    )
 
 
 def load_ini():
     """key=value 설정을 dict 로. 없으면 기본값."""
-    cfg = {"simple_mode": "false", "hangul_entry": "0", "latin_entry": "1"}
+    cfg = {
+        "simple_mode": "false",
+        "hangul_entry": "0",
+        "latin_entry": "1",
+        "shortcuts_enabled": "true",
+    }
     try:
         with open(ini_path(), encoding="utf-8") as f:
             for line in f:
@@ -50,7 +61,7 @@ def load_ini():
     return cfg
 
 
-def save_ini(simple, hangul_idx, latin_idx):
+def save_ini(simple, hangul_idx, latin_idx, shortcuts):
     os.makedirs(config_dir(), exist_ok=True)
     body = (
         "# presguel 설정 (presguel-setup 가 생성). key=value 형식.\n"
@@ -60,6 +71,8 @@ def save_ini(simple, hangul_idx, latin_idx):
         f"hangul_entry = {hangul_idx}\n"
         "# 간단 모드에서 한/영 전환 시 쓸 영문 InputEntry 인덱스.\n"
         f"latin_entry = {latin_idx}\n"
+        "# 단축글쇠(한/영 키 등)로 입력 항목 전환. 끄면 그 키를 통과시켜 직접 바인딩 가능.\n"
+        f"shortcuts_enabled = {'true' if shortcuts else 'false'}\n"
     )
     with open(ini_path(), "w", encoding="utf-8") as f:
         f.write(body)
@@ -157,6 +170,24 @@ class SetupWindow(Adw.ApplicationWindow):
         self.latin_row.connect("notify::selected", self.on_change)
         group.add(self.latin_row)
 
+        # 단축글쇠 사용 토글. 기본 켜짐. 끄면 한/영 키 등을 통과시켜 직접 바인딩 가능.
+        sc_group = Adw.PreferencesGroup(
+            title="단축글쇠",
+            description="한/영 키 등으로 입력 항목을 전환합니다. 끄면 그 키들이 엔진을 거치지 않고 "
+            "통과되어, 원하는 키를 직접 바인딩할 수 있습니다. (참고: Wayland 에서 CapsLock 은 "
+            "컴포지터가 직접 처리해 입력기까지 오지 않으므로, 단축글쇠로 쓸 수 없고 GNOME 설정 "
+            "등에서 직접 지정해야 합니다.)",
+        )
+        page.add(sc_group)
+
+        self.shortcuts_row = Adw.SwitchRow(
+            title="단축글쇠 사용",
+            subtitle="끄면 한/영 키 등을 통과시켜 직접 바인딩",
+        )
+        self.shortcuts_row.set_active(_to_bool(cfg.get("shortcuts_enabled", "true")))
+        self.shortcuts_row.connect("notify::active", self.on_change)
+        sc_group.add(self.shortcuts_row)
+
         # 키보드 배열 안내(단축키·영문은 GNOME 입력 소스에서 배열별 엔진을 골라 정한다).
         kbd_group = Adw.PreferencesGroup(
             title="키보드 배열",
@@ -199,13 +230,16 @@ class SetupWindow(Adw.ApplicationWindow):
         simple = self.simple_row.get_active()
         h = self.hangul_row.get_selected() if self.entries else 0
         l = self.latin_row.get_selected() if self.entries else 1
-        save_ini(simple, h, l)
+        shortcuts = self.shortcuts_row.get_active()
+        save_ini(simple, h, l, shortcuts)
 
 
 class SetupApp(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="org.freedesktop.IBus.Presguel.Setup",
-                         flags=Gio.ApplicationFlags.FLAGS_NONE)
+        super().__init__(
+            application_id="org.freedesktop.IBus.Presguel.Setup",
+            flags=Gio.ApplicationFlags.FLAGS_NONE,
+        )
 
     def do_activate(self):
         win = self.props.active_window

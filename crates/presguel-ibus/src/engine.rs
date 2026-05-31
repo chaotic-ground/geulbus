@@ -307,7 +307,9 @@ impl IBusEngine {
     /// 조회한다(날개셋 모델). 그러면 사용자 XKB 가 드보락이어도 세벌식 자리가 고정된다.
     /// keycode 가 없거나(프로그램 주입) 매핑 밖이면 keyval 로 폴백한다.
     fn classify(&self, keyval: u32, keycode: u32, state: u32) -> KeyClass {
-        if self.ime_switch.contains_key(&keyval) {
+        // 단축키(IME_SWITCH)를 끄면 그 키들을 가로채지 않고 통과시킨다(아래 일반 분류로 진행).
+        // 예: GNOME/Wayland 에서 CapsLock 을 직접 바인딩하려는 사용자.
+        if self.settings.shortcuts_enabled && self.ime_switch.contains_key(&keyval) {
             return KeyClass::ImeSwitch;
         }
         if state & RELEASE_MASK != 0 {
@@ -569,6 +571,7 @@ mod tests {
                 simple_mode: true,
                 hangul_entry: 0,
                 latin_entry: 0,
+                shortcuts_enabled: true,
             },
         );
         assert_eq!(e.mode_symbol(), "가");
@@ -600,6 +603,7 @@ mod tests {
             simple_mode: true,
             hangul_entry: 0,
             latin_entry: 0,
+            shortcuts_enabled: true,
         };
         let e = IBusEngine::with_settings(&cfg, st);
         assert!(e.settings.simple_mode);
@@ -617,6 +621,7 @@ mod tests {
             simple_mode: true,
             hangul_entry: 0,
             latin_entry: 0,
+            shortcuts_enabled: true,
         });
         assert_ne!(before.simple_mode, e.settings.simple_mode);
         assert!(e.settings.simple_mode);
@@ -671,6 +676,24 @@ mod tests {
     #[test]
     fn hangul_key_is_ime_switch() {
         assert_eq!(engine().classify(0xff31, 0, 0), KeyClass::ImeSwitch);
+    }
+
+    #[test]
+    fn shortcuts_disabled_passes_switch_keys_through() {
+        // shortcuts_enabled=false 면 한/영 키·CapsLock 을 가로채지 않고 통과(엔진 밖에서 직접 바인딩).
+        let cfg = Config::parse(MINI).unwrap();
+        let st = Settings {
+            shortcuts_enabled: false,
+            ..Settings::default()
+        };
+        let e = IBusEngine::with_settings(&cfg, st);
+        // 한/영 키(0xff31): ImeSwitch 가 아니어야 함(기능키로 떨어져 통과).
+        assert_ne!(e.classify(0xff31, 0, 0), KeyClass::ImeSwitch);
+        // CapsLock(0xffe5): ImeSwitch 가 아니라 Modifier(통과)로 분류.
+        assert_eq!(e.classify(0xffe5, 0, 0), KeyClass::Modifier);
+        // 켜져 있으면 둘 다 ImeSwitch (대조군).
+        assert_eq!(engine().classify(0xff31, 0, 0), KeyClass::ImeSwitch);
+        assert_eq!(engine().classify(0xffe5, 0, 0), KeyClass::ImeSwitch);
     }
 
     #[test]

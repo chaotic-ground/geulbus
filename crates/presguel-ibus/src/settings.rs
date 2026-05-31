@@ -11,6 +11,8 @@
 //! # 그 한글 항목의 글쇠가 깔린 영문 배치 InputEntry 인덱스.
 //! # 단축키 조합(Ctrl/Alt/Super+키)을 이 배치로 변환해 응용에 넘긴다(예: 드보락).
 //! latin_entry = 1
+//! # IME_SWITCH 단축글쇠(한/영 키 등)로 입력 항목을 전환할지. 끄면 그 키를 통과시킨다.
+//! shortcuts_enabled = true
 //! ```
 
 use std::path::PathBuf;
@@ -25,6 +27,11 @@ pub struct Settings {
     pub hangul_entry: usize,
     /// 간단 모드에서 단축키 조합을 변환할 기준 영문 배치 InputEntry 인덱스.
     pub latin_entry: usize,
+    /// IME_SWITCH 단축글쇠(한/영 키 등)로 입력 항목을 전환할지. 기본 켜짐.
+    /// 끄면 그 키들을 가로채지 않고 통과시켜, 사용자가 엔진 밖(GNOME/XKB 등)에서
+    /// 직접 바인딩할 수 있다. 참고: Wayland 에서 CapsLock 은 컴포지터가 직접 처리해
+    /// IME 까지 오지 않으므로, 애초에 단축글쇠로 쓸 수 없다(직접 바인딩해야 함).
+    pub shortcuts_enabled: bool,
 }
 
 impl Default for Settings {
@@ -33,6 +40,7 @@ impl Default for Settings {
             simple_mode: false,
             hangul_entry: 0,
             latin_entry: 1,
+            shortcuts_enabled: true,
         }
     }
 }
@@ -94,6 +102,11 @@ impl Settings {
                         s.latin_entry = n;
                     }
                 }
+                "shortcuts_enabled" => {
+                    if let Some(b) = parse_bool(v) {
+                        s.shortcuts_enabled = b;
+                    }
+                }
                 _ => {}
             }
         }
@@ -145,5 +158,16 @@ mod tests {
         assert!(Settings::parse("simple_mode=yes").simple_mode);
         assert!(!Settings::parse("simple_mode=off").simple_mode);
         assert!(!Settings::parse("simple_mode=garbage").simple_mode);
+    }
+
+    #[test]
+    fn shortcuts_enabled_default_on_and_parses() {
+        // 기본은 단축키 사용.
+        assert!(Settings::default().shortcuts_enabled);
+        assert!(Settings::parse("").shortcuts_enabled);
+        // 끄기/켜기.
+        assert!(!Settings::parse("shortcuts_enabled = false").shortcuts_enabled);
+        assert!(!Settings::parse("shortcuts_enabled=off").shortcuts_enabled);
+        assert!(Settings::parse("shortcuts_enabled = on").shortcuts_enabled);
     }
 }
