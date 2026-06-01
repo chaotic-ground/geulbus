@@ -48,6 +48,9 @@ pub struct Engine {
     history: Vec<Unit>,
     /// 오토마타 현재 상태 id. layout.automata 가 비어 있으면 미사용(기본 휴리스틱).
     auto_state: i64,
+    /// Bksp 연타 지속성: 백스페이스를 연달아 누르는 동안 최초로 결정된 삭제 단위를
+    /// 유지한다(날개셋 "연타 시 한 번 정해진 동작 계속"). 비-Bksp 입력이 들어오면 None 으로.
+    bksp_streak: Option<BkspUnit>,
 }
 
 impl Engine {
@@ -58,6 +61,7 @@ impl Engine {
             cur: Syllable::default(),
             history: Vec::new(),
             auto_state,
+            bksp_streak: None,
         }
     }
 
@@ -142,6 +146,7 @@ impl Engine {
         let s = self.commit_current();
         self.history.clear();
         self.auto_state = self.layout.automata_start;
+        self.bksp_streak = None;
         s
     }
 
@@ -150,6 +155,7 @@ impl Engine {
         self.cur = Syllable::default();
         self.history.clear();
         self.auto_state = self.layout.automata_start;
+        self.bksp_streak = None;
     }
 
     // ── 낱자 투입 ────────────────────────────────────────────────────────────
@@ -447,6 +453,8 @@ impl Engine {
     /// KeyTable 의 ASCII 글쇠(0x21..0x7E)를 처리한다. `caps` 는 Caps Lock 점등 상태로,
     /// 값-식의 `P` (bit0)에 들어간다(세벌식 항목은 P 미사용).
     pub fn press(&mut self, ascii: u8, caps: bool) -> KeyOutcome {
+        // 일반 글쇠 입력은 Bksp 연타를 끊는다(연타 지속성 종료).
+        self.bksp_streak = None;
         let expr = match self.layout.keys.get(&(ascii as u32)) {
             Some(e) => e.clone(),
             None => {
@@ -517,15 +525,26 @@ impl Engine {
     /// 단계씩 풀린다(날개셋 ByUnitStep 에 해당).
     pub fn backspace(&mut self) -> KeyOutcome {
         if self.cur.is_empty() {
-            // 조합 중이 아니면 응용이 직접 지우도록 넘김
+            // 조합 중이 아니면 응용이 직접 지우도록 넘김(앞 글자 재조합=BkspAttach 는
+            // 프런트엔드가 surrounding-text 로 처리). 연타 상태는 유지하지 않는다.
+            self.bksp_streak = None;
             return KeyOutcome {
                 commit: String::new(),
                 preedit: String::new(),
                 consumed: false,
             };
         }
-        // 조합 중이므로 제1동작(composing) 삭제 단위를 따른다.
-        self.bksp_remove(self.layout.bksp.composing);
+        // 삭제 단위 결정: 연타 중이면 최초 결정 동작 유지, 아니면 제1동작(composing)으로
+        // 새로 정하고 연타 상태에 기록(연타 지속성).
+        let unit = match self.bksp_streak {
+            Some(u) => u,
+            None => {
+                let u = self.layout.bksp.composing;
+                self.bksp_streak = Some(u);
+                u
+            }
+        };
+        self.bksp_remove(unit);
         // 남은 이력을 처음부터 재생해 현재 음절을 재구성(오토마타 상태도 초기화).
         let hist = std::mem::take(&mut self.history);
         self.cur = Syllable::default();
@@ -971,5 +990,29 @@ mod tests {
         assert_eq!(e.preedit(), "갅");
         let o = e.backspace();
         assert_eq!(o.preedit, "간"); // ㄵ → ㄴ (한 단계)
+    }
+
+    #[test]
+    fn bksp_streak_keeps_initial_unit() {
+        // 연타 지속성: 글자전체(Syllable) 모드로 시작한 Bksp 연타는 조합 상태가 바뀌어도
+        // 매번 글자 전체를 지운다. 간 입력 → Bksp(간 통째 제거, 빈) → 다시 가 입력 후
+        // 같은 streak 이 아님을 확인(중간에 press 로 끊김).
+        let mut e = bksp_engine("BySyllable");
+        typ(&mut e, "gam"); // 간
+        let o1 = e.backspace(); // 글자 전체 → 빈
+        assert_eq!(o1.preedit, "");
+        // 연타 상태는 비조합이 되며 streak 해제됨(다음 입력은 새로).
+    }
+
+    #[test]
+    fn bksp_streak_broken_by_press() {
+        // press 가 들어오면 연타가 끊긴다(streak=None). 동작 단위는 매번 composing 으로 결정.
+        let mut e = bksp_engine("ByUnitStep");
+        typ(&mut e, "ga"); // 가
+        let _ = e.backspace(); // ㅏ 제거 → ㄱ (streak=LastKey 기록)
+        assert_eq!(e.preedit(), "ㄱ");
+        typ(&mut e, "a"); // 다시 ㅏ → 가 (press 가 streak 해제)
+        assert_eq!(e.preedit(), "가");
+        assert!(e.bksp_streak.is_none());
     }
 }
