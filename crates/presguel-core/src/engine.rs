@@ -293,21 +293,54 @@ impl Engine {
 
     /// 낱자를 현재 음절의 해당 칸에 넣는다(확정 없이). 칸이 차 있으면 UnitMix 결합을
     /// 시도하고, 결합 규칙이 없으면 교체한다(= 무한 낱자 수정). 빈 칸이면 그대로 채운다.
-    fn put_modify(&mut self, j: Jamo) {
+    /// 교체가 일어났으면 `true`(이력 정리용).
+    fn put_modify(&mut self, j: Jamo) -> bool {
         let existing = match j.category {
             Category::Cho => self.cur.cho,
             Category::Jung => self.cur.jung,
             Category::Jong => self.cur.jong,
         };
-        let newcp = match existing {
-            None => j.cp,
-            Some(e) => self.layout.combine(j.category, e, j.cp).unwrap_or(j.cp),
+        // 빈 칸=채움, 결합 규칙 있으면 결합, 없으면 교체(무한 낱자 수정).
+        let (newcp, replaced) = match existing {
+            None => (j.cp, false),
+            Some(e) => match self.layout.combine(j.category, e, j.cp) {
+                Some(r) => (r, false),
+                None => (j.cp, true),
+            },
         };
         match j.category {
             Category::Cho => self.cur.cho = Some(newcp),
             Category::Jung => self.cur.jung = Some(newcp),
             Category::Jong => self.cur.jong = Some(newcp),
         }
+        replaced
+    }
+
+    /// 단위의 낱자 갈래(백스페이스 이력 정리용). 가상단위는 풀어서, 토글은 초성으로 본다.
+    fn unit_cat(layout: &Layout, u: &Unit) -> Option<Category> {
+        match u {
+            Unit::Jamo(j) => Some(j.category),
+            Unit::Virtual(id) => layout.virtual_units.get(id).map(|j| j.category),
+            Unit::Toggle => Some(Category::Cho),
+        }
+    }
+
+    /// 낱자를 이력에 기록한다. 무한 낱자 수정으로 같은 칸을 *교체*한 경우엔, 그 칸의
+    /// 직전 단위를 이력에서 빼고 새 단위를 넣어, 낱자 단위 백스페이스가 정확히 현재
+    /// 낱자만 되돌리도록 한다. (결합이면 둘 다 남겨 한 단계씩 분해.)
+    fn record_unit(&mut self, u: Unit, replaced: bool, cat: Category) {
+        if replaced {
+            let pos = {
+                let layout = &self.layout;
+                self.history
+                    .iter()
+                    .rposition(|h| Self::unit_cat(layout, h) == Some(cat))
+            };
+            if let Some(p) = pos {
+                self.history.remove(p);
+            }
+        }
+        self.history.push(u);
     }
 
     /// 빈 음절에 낱자 하나를 넣었을 때의 오토마타 상태(시작 상태에서 평가).
@@ -371,15 +404,15 @@ impl Engine {
         match r {
             // 조합 계속: 해당 칸에 배치(차 있으면 결합/교체) 후 상태 갱신.
             n if n > 0 => {
-                self.put_modify(j);
+                let replaced = self.put_modify(j);
                 self.auto_state = n;
-                self.history.push(Unit::Jamo(j));
+                self.record_unit(Unit::Jamo(j), replaced, j.category);
                 String::new()
             }
             // 무한 낱자 수정: 현재 음절을 확정하지 않고 칸을 결합/교체. 상태 유지.
             -2 => {
-                self.put_modify(j);
-                self.history.push(Unit::Jamo(j));
+                let replaced = self.put_modify(j);
+                self.record_unit(Unit::Jamo(j), replaced, j.category);
                 String::new()
             }
             // 입력 무시(소비만).
@@ -494,6 +527,8 @@ impl Engine {
         self.history.pop();
         let hist = std::mem::take(&mut self.history);
         self.cur = Syllable::default();
+        // 오토마타 상태도 처음부터 재생되도록 초기화(재생 중 automaton_feed 가 다시 쌓는다).
+        self.auto_state = self.layout.automata_start;
         for u in hist {
             // 한 음절 안의 단위들이므로 재생 중 확정은 발생하지 않는다.
             let _ = self.feed_unit(u);
@@ -722,6 +757,7 @@ mod tests {
           <Key at="0x65" value="H3|EO"/>  <!-- e 중 ㅓ -->
           <Key at="0x6F" value="H3|O_"/>  <!-- o 중 ㅗ -->
           <Key at="0x6D" value="H3|_N"/>  <!-- m 종 ㄴ -->
+          <Key at="0x69" value="H3|AE"/> <!-- i 중 ㅐ -->
         </KeyTable>
       </InputSchemeSetting>
       <GeneratorSetting object="CNgsImeEx">
@@ -801,5 +837,27 @@ mod tests {
         let out = e.press(b'n', false); // 초 ㄴ
         assert_eq!(out.commit, "가");
         assert_eq!(out.preedit, "ㄴ");
+    }
+
+    #[test]
+    fn backspace_after_infinite_edit() {
+        // ㄱ → 가 → 개(중성 ㅏ→ㅐ 무한 낱자 수정) 후 백스페이스 → ㄱ.
+        // (교체된 ㅏ 가 이력에 남아 "가" 로 돌아가던 버그 방지.)
+        let mut e = auto_engine();
+        typ(&mut e, "ga"); // 가
+        let o1 = e.press(b'i', false); // ㅐ → 개
+        assert_eq!(o1.preedit, "개");
+        let o2 = e.backspace(); // 중성 제거 → ㄱ
+        assert_eq!(o2.preedit, "ㄱ");
+    }
+
+    #[test]
+    fn backspace_after_compound_keeps_steps() {
+        // 결합(겹모음)은 한 단계씩: ㄱㅗㅏ→과, 백스페이스 → 고(ㅘ→ㅗ).
+        let mut e = auto_engine();
+        typ(&mut e, "goa"); // 과
+        assert_eq!(e.preedit(), "과");
+        let o = e.backspace();
+        assert_eq!(o.preedit, "고");
     }
 }
