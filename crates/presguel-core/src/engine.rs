@@ -55,9 +55,10 @@ pub struct Engine {
     /// Bksp 연타 지속성: 백스페이스를 연달아 누르는 동안 최초로 결정된 삭제 단위를
     /// 유지한다(날개셋 "연타 시 한 번 정해진 동작 계속"). 비-Bksp 입력이 들어오면 None 으로.
     bksp_streak: Option<BkspUnit>,
-    /// BkspAttach 용: 직전에 확정(commit)한 음절들의 단위 이력. 조합이 빈 상태에서
-    /// Backspace + attach 면 마지막 음절을 되살려 재조합한다(앞의 확정 글자에 "달라붙기").
-    /// 새 글자 입력이 진행되면 무한정 쌓이지 않게 마지막 1개만 의미 있게 유지한다.
+    /// BkspAttach 용: 직전에 확정(commit)한 음절들의 단위 이력 스택. 조합이 빈 상태에서
+    /// Backspace + attach 면 맨 위(가장 최근) 음절을 되살려 재조합한다(앞의 확정 글자에
+    /// "달라붙기"). 가나가… 처럼 연속 확정한 글자들을 차례로 되살릴 수 있도록 누적하되,
+    /// `MAX_PREV_SYLLABLES` 상한을 둬 무한 증가를 막는다.
     prev_syllables: Vec<Vec<Unit>>,
 }
 
@@ -136,15 +137,20 @@ impl Engine {
         self.render(&self.cur)
     }
 
+    /// BkspAttach 되살리기 이력으로 보관할 최대 음절 수(메모리 상한).
+    const MAX_PREV_SYLLABLES: usize = 32;
+
     /// 현재 음절을 확정 문자열로 만들고 버퍼를 비운다(이력은 건드리지 않음).
-    /// 비지 않은 음절을 확정할 때는 그 음절의 단위 이력을 BkspAttach 용으로 보존한다.
+    /// 비지 않은 음절을 확정할 때는 그 음절의 단위 이력을 BkspAttach 용으로 누적 보존한다.
     fn commit_current(&mut self) -> String {
         let s = self.render(&self.cur);
         if !self.cur.is_empty() && !self.history.is_empty() {
-            // 확정되는 음절의 자모 이력 스냅샷(되살리기용). 마지막 1개만 의미 있으므로
-            // 무한 증가를 막아 1칸만 유지한다.
-            self.prev_syllables.clear();
+            // 확정되는 음절의 자모 이력 스냅샷(되살리기용). 연속 확정(가나다…)을 차례로
+            // 되살릴 수 있도록 스택처럼 누적하되, 상한을 둬 무한 증가를 막는다.
             self.prev_syllables.push(self.history.clone());
+            if self.prev_syllables.len() > Self::MAX_PREV_SYLLABLES {
+                self.prev_syllables.remove(0);
+            }
         }
         self.cur = Syllable::default();
         s
@@ -1129,5 +1135,33 @@ mod tests {
         let o = e.backspace(); // 빈 + attach 없음 → 통과
         assert!(!o.consumed);
         assert_eq!(o.delete_before, 0);
+    }
+
+    #[test]
+    fn bksp_attach_chain_multiple_syllables() {
+        // 가나가(가·나 확정, 가 조합) 후 백스페이스 연속: 가→ㄱ→빈→(나 되살림)ㄴ→빈→
+        // (가 되살림)ㄱ→빈. 즉 확정된 글자들을 차례로 되살려 한 단계씩 지운다.
+        // (키맵에 ㄷ가 없어 가나가로 같은 3음절 되살리기 연쇄를 재현한다.)
+        let mut e = attach_engine();
+        let mut committed = String::new();
+        for ch in "ganaga".chars() {
+            committed.push_str(&e.press(ch as u8, false).commit);
+        }
+        assert_eq!(committed, "가나"); // 가·나 확정, 마지막 가 조합 중
+        assert_eq!(e.preedit(), "가");
+        let o0 = e.backspace(); // 가 → ㄱ
+        assert_eq!(o0.preedit, "ㄱ");
+        let o1 = e.backspace(); // ㄱ → 빈
+        assert_eq!(o1.preedit, "");
+        let o2 = e.backspace(); // attach: 나 되살려 ㄴ, del=1(앱의 "나" 제거)
+        assert_eq!((o2.preedit.as_str(), o2.delete_before), ("ㄴ", 1));
+        let o3 = e.backspace(); // ㄴ → 빈
+        assert_eq!(o3.preedit, "");
+        let o4 = e.backspace(); // attach: 가 되살려 ㄱ, del=1(앱의 "가" 제거)
+        assert_eq!((o4.preedit.as_str(), o4.delete_before), ("ㄱ", 1));
+        let o5 = e.backspace(); // ㄱ → 빈
+        assert_eq!(o5.preedit, "");
+        let o6 = e.backspace(); // 더 되살릴 것 없음 → 통과
+        assert!(!o6.consumed);
     }
 }
