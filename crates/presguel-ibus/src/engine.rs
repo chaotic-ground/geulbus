@@ -95,10 +95,10 @@ impl Mode {
     fn is_hangul(&self) -> bool {
         matches!(self, Mode::Hangul(_))
     }
-    /// 패널 심볼 접두(한글=글, 로마자/직접=A).
+    /// 패널 심볼 접두(한글=가, 로마자/직접=A).
     fn symbol_prefix(&self) -> &'static str {
         if self.is_hangul() {
-            "글"
+            "가"
         } else {
             "A"
         }
@@ -106,7 +106,7 @@ impl Mode {
 }
 
 /// IBus 엔진 인스턴스 하나. 설정의 모든 입력 항목을 담고 IME_SWITCH 로 순환 전환한다.
-/// 패널 표시기는 날개셋처럼 `접두+항목번호`(예: `글0`, `A1`)로 보인다.
+/// 패널 표시기는 날개셋처럼 `접두+항목번호`(예: `가0`, `A1`)로 보인다.
 pub struct IBusEngine {
     entries: Vec<Mode>,
     /// 현재 활성 입력 항목 인덱스.
@@ -290,8 +290,8 @@ impl IBusEngine {
         }
     }
 
-    /// 패널 심볼: 접두(한글=글, 로마자/직접=A)에 항목 번호를 아래첨자로 붙인다(예: "글₀").
-    /// 항목 직접 지정 모드에서는 항목이 하나로 고정이라 번호 없이 접두만 보인다(예: "글", "A").
+    /// 패널 심볼: 접두(한글=가, 로마자/직접=A)에 항목 번호를 아래첨자로 붙인다(예: "가₀").
+    /// 항목 직접 지정 모드에서는 항목이 하나로 고정이라 번호 없이 접두만 보인다(예: "가", "A").
     fn mode_symbol(&self) -> String {
         let prefix = self.cur().symbol_prefix();
         if self.settings.pick_entry {
@@ -649,7 +649,7 @@ mod tests {
     fn mode_symbol_full_uses_subscript() {
         // 전체 모드(기본): 접두 + 아래첨자 항목번호. MINI 는 한글 항목 1개, current=0.
         let e = engine();
-        assert_eq!(e.mode_symbol(), "글₀");
+        assert_eq!(e.mode_symbol(), "가₀");
     }
 
     #[test]
@@ -664,7 +664,7 @@ mod tests {
                 shortcuts_enabled: true,
             },
         );
-        assert_eq!(e.mode_symbol(), "글");
+        assert_eq!(e.mode_symbol(), "가");
     }
 
     #[test]

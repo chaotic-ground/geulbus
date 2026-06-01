@@ -118,7 +118,7 @@ for spec in "${engines[@]}"; do
       <longname>${longname}</longname>
       <description>Presguel 한글 입력기 (${disp})</description>
       <rank>50</rank>
-      <symbol>글</symbol>
+      <symbol>가</symbol>
       <setup>${setup_dst}</setup>
     </engine>"
 done
