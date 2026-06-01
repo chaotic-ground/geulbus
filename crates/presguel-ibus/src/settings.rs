@@ -60,16 +60,7 @@ impl Settings {
                 return Some(PathBuf::from(p));
             }
         }
-        let base = std::env::var("XDG_CONFIG_HOME")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".config"))
-            })?;
-        Some(base.join("presguel").join("config.ini"))
+        Some(crate::paths::presguel_config_dir()?.join("config.ini"))
     }
 
     /// `key=value` 본문을 파싱. 알 수 없는 키/값은 무시하고 기본값 유지.

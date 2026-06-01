@@ -10,7 +10,8 @@ AdwPreferencesGroup + AdwSwitchRow + AdwComboRow.
   - 자판 다시 불러오기 버튼(입력기 재시작): nalgaeset.xml 변경은 자동 반영 안 됨
 
 설정은 ~/.config/presguel/config.ini (key=value) 에 저장한다(엔진과 같은 형식).
-드롭다운 항목은 ~/.config/presguel/nalgaeset.xml 의 InputEntry 들에서 읽는다.
+드롭다운 항목은 자판 파일(~/.config/presguel/layout.xml, 엔진과 같은 탐색 순서)의
+InputEntry 들에서 읽는다.
 """
 
 import os
@@ -36,10 +37,31 @@ def ini_path():
     )
 
 
+def data_dirs():
+    raw = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    return [d for d in raw.split(":") if d]
+
+
 def xml_path():
-    return os.environ.get("PRESGUEL_CONFIG") or os.path.join(
-        config_dir(), "nalgaeset.xml"
-    )
+    """자판 파일 경로를 엔진과 같은 순서로 해석한다. 존재하는 첫 후보를 쓰고,
+    하나도 없으면 사용자 기본 경로(새 이름)를 돌려준다(메시지·생성용).
+      1. $PRESGUEL_CONFIG
+      2. ~/.config/presguel/layout.xml
+      3. ~/.config/presguel/nalgaeset.xml (옛 이름, 하위 호환)
+      4. <XDG_DATA_DIRS>/presguel/layout.xml (시스템 기본값)
+    """
+    env = os.environ.get("PRESGUEL_CONFIG")
+    if env:
+        return env
+    candidates = [
+        os.path.join(config_dir(), "layout.xml"),
+        os.path.join(config_dir(), "nalgaeset.xml"),
+    ]
+    candidates += [os.path.join(d, "presguel", "layout.xml") for d in data_dirs()]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return candidates[0]
 
 
 def load_ini():

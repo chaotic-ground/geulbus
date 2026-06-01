@@ -2,7 +2,8 @@
 # presguel-ibus 설치 스크립트.
 #
 #   - 릴리스 바이너리를 빌드해 /usr/local/bin 에 설치(sudo).
-#   - 날개셋 설정을 ~/.config/presguel/nalgaeset.xml 에 둔다(사용자).
+#   - 자판(입력 설정)을 ~/.config/presguel/layout.xml 에 두고(사용자),
+#     시스템 기본값 /usr/local/share/presguel/layout.xml 로도 복사(sudo, fallback).
 #   - ibus 컴포넌트를 /usr/share/ibus/component/presguel.xml 로 생성(sudo).
 #     레이아웃별 엔진(QWERTY/Dvorak/Colemak/...)을 함께 등록한다.
 #   - 시스템 레지스트리 캐시를 갱신하고 ibus 를 재시작.
@@ -11,8 +12,8 @@
 # 스캔하지 않고 /usr/share/ibus/component 만 스캔하므로 시스템 설치가 필요하다.
 #
 # 사용법:
-#   scripts/install.sh [path/to/nalgaeset.xml]
-# 인자가 없으면 기존 ~/.config/presguel/nalgaeset.xml 를 사용한다.
+#   scripts/install.sh [path/to/layout.xml]
+# 인자가 없으면 기존 ~/.config/presguel/layout.xml(또는 옛 이름 nalgaeset.xml)를 쓴다.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,7 +21,9 @@ cd "$repo_root"
 
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}"
 presguel_cfg_dir="$config_dir/presguel"
-cfg_dst="$presguel_cfg_dir/nalgaeset.xml"
+cfg_dst="$presguel_cfg_dir/layout.xml"
+cfg_legacy="$presguel_cfg_dir/nalgaeset.xml" # 옛 이름(하위 호환)
+sys_cfg_dst="/usr/local/share/presguel/layout.xml" # 시스템 기본값(fallback)
 bin_dst="/usr/local/bin/presguel-ibus"
 setup_dst="/usr/local/bin/presguel-setup"
 setup_src="$repo_root/crates/presguel-ibus/data/presguel-setup.py"
@@ -65,17 +68,26 @@ sudo install -Dm755 "$setup_src" "$setup_dst"
 sudo install -Dm644 "$desktop_src" "$desktop_dst"
 sudo update-desktop-database /usr/share/applications 2>/dev/null || true
 
-echo "[3/5] 설정 배치 → $cfg_dst"
+echo "[3/5] 자판 배치 → $cfg_dst"
 mkdir -p "$presguel_cfg_dir"
+cfg_src=""
 if [[ "${1:-}" != "" ]]; then
   cp "$1" "$cfg_dst"
+  cfg_src="$cfg_dst"
   echo "      $1 -> $cfg_dst"
 elif [[ -f "$cfg_dst" ]]; then
-  echo "      기존 설정 사용"
+  cfg_src="$cfg_dst"
+  echo "      기존 자판 사용 ($cfg_dst)"
+elif [[ -f "$cfg_legacy" ]]; then
+  cfg_src="$cfg_legacy"
+  echo "      기존 자판 사용 (옛 이름 $cfg_legacy)"
 else
-  echo "      오류: nalgaeset.xml 경로를 인자로 주거나 $cfg_dst 에 미리 두세요." >&2
+  echo "      오류: 자판 파일 경로를 인자로 주거나 $cfg_dst 에 미리 두세요." >&2
   exit 1
 fi
+# 시스템 기본값으로도 설치(사용자 파일이 없을 때의 fallback). 심링크면 내용이 복사된다.
+echo "      시스템 기본값 → $sys_cfg_dst (sudo)"
+sudo install -Dm644 "$cfg_src" "$sys_cfg_dst"
 
 echo "[4/5] ibus 컴포넌트 생성(레이아웃별 엔진 ${#engines[@]}개) → $component_dst (sudo)"
 # 엔진 블록들을 만든다.
