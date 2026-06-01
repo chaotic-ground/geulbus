@@ -133,7 +133,33 @@ impl Engine {
             }
             return s;
         }
-        // 그 외(홑낱자, 또는 중성 없는 부분 조합): 칸별로 호환 자모.
+        // 초성 또는 중성 한쪽만 빈 부분 음절(낱자 2개 이상)은 채움 문자로 모아 그린다.
+        // 빈 초성 자리에 U+115F(초성 채움), 빈 중성 자리에 U+1160(중성 채움)을 넣어
+        // 첫가끝 L·V·T 시퀀스를 만들면, 폰트/셰이퍼가 빈 자리를 둔 음절 블록으로 합친다.
+        // (예: 초성 삭제 후 ㅏㄴ, 중성 삭제 후 ㄱㄴ.) 호환 자모는 절대 안 모아지므로.
+        let count = [syl.cho, syl.jung, syl.jong]
+            .iter()
+            .filter(|x| x.is_some())
+            .count();
+        if count >= 2 {
+            const CHOSEONG_FILLER: u32 = 0x115F;
+            const JUNGSEONG_FILLER: u32 = 0x1160;
+            let mut s = String::new();
+            for cp in [
+                Some(syl.cho.unwrap_or(CHOSEONG_FILLER)),
+                Some(syl.jung.unwrap_or(JUNGSEONG_FILLER)),
+                syl.jong,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Some(c) = char::from_u32(cp) {
+                    s.push(c);
+                }
+            }
+            return s;
+        }
+        // 단독 낱자(초성/중성/종성 중 하나): 호환 자모.
         let mut s = String::new();
         for (cat, cp) in [
             (Category::Cho, syl.cho),
@@ -1664,15 +1690,17 @@ mod tests {
         let o = e.press(b'A', false); // C0|0x2 초성 삭제
         assert_eq!(o.commit, "");
         assert!(o.consumed);
-        assert_eq!(o.preedit, "ㅏㄴ");
+        // 초성 채움(U+115F) + ㅏ + ㄴ: 빈 초성 자리를 둔 음절로 모아 그려진다.
+        assert_eq!(o.preedit, "\u{115F}\u{1161}\u{11AB}");
     }
 
     #[test]
     fn c0_delete_jung() {
         let mut e = auto_engine();
         typ(&mut e, "gam"); // 간
-        let o = e.press(b'B', false); // C0|0x3 중성 삭제 → ㄱㄴ
-        assert_eq!(o.preedit, "ㄱㄴ");
+        let o = e.press(b'B', false); // C0|0x3 중성 삭제 → ㄱ(중성채움)ㄴ
+                                      // ㄱ + 중성 채움(U+1160) + ㄴ: 빈 중성 자리를 둔 음절로 모아 그려진다.
+        assert_eq!(o.preedit, "\u{1100}\u{1160}\u{11AB}");
     }
 
     #[test]
@@ -1703,8 +1731,8 @@ mod tests {
         let o = e.press(b'D', false); // 가 확정, ㄴ 대기(종성)
         assert_eq!(o.commit, "가");
         assert_eq!(o.preedit, "ㄴ");
-        let o2 = e.press(b'g', false); // 초성 ㄱ
-        assert_eq!(o2.preedit, "ㄱㄴ");
+        let o2 = e.press(b'g', false); // 초성 ㄱ → ㄱ(중성채움)ㄴ
+        assert_eq!(o2.preedit, "\u{1100}\u{1160}\u{11AB}");
         let o3 = e.press(b'a', false); // 중성 ㅏ → ㄱ+ㅏ+ㄴ = 간
         assert_eq!(o3.preedit, "간");
     }
@@ -1715,7 +1743,7 @@ mod tests {
         let mut e = auto_engine();
         typ(&mut e, "gam"); // 간
         let o = e.press(b'E', false); // C0|0x8
-        assert_eq!(o.commit, "ㅏㄴ");
+        assert_eq!(o.commit, "\u{115F}\u{1161}\u{11AB}"); // (초성채움)ㅏㄴ
         assert_eq!(o.preedit, "ㄱ");
     }
 
@@ -1725,7 +1753,7 @@ mod tests {
         let mut e = auto_engine();
         typ(&mut e, "gam"); // 간
         let o = e.press(b'F', false); // C0|0x9
-        assert_eq!(o.commit, "ㄱㄴ");
+        assert_eq!(o.commit, "\u{1100}\u{1160}\u{11AB}"); // ㄱ(중성채움)ㄴ
         assert_eq!(o.preedit, "ㅏ");
     }
 
