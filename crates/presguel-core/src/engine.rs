@@ -593,6 +593,9 @@ impl Engine {
     /// 빼고 나머지를 다시 재생(replay)하므로, 겹낱자/겹모음/갈마들이 토글이 정확히 한
     /// 단계씩 풀린다(날개셋 ByUnitStep 에 해당).
     pub fn backspace(&mut self) -> KeyOutcome {
+        // 백스페이스는 새로운 편집 동작이므로 "직전 겹쳐쓰기" 기록을 무효화한다(그 낱자가
+        // 지워지면 0x13/0x14 가 사라진 낱자를 되살리려 하면 안 된다).
+        self.last_overwrite = None;
         if self.cur.is_empty() {
             // 조합 중이 아님. BkspAttach 가 켜져 있고 직전에 확정한 음절이 있으면, 그
             // 음절을 되살려(앞 글자에 "달라붙기") 거기서 한 단계 지운다. 프런트엔드가
@@ -882,14 +885,16 @@ impl Engine {
     /// last_overwrite 의 new 낱자를 현재 이력에서 old 로 되돌린다(있으면). 되돌린 뒤
     /// 재생은 호출부가 한다. 되돌린 (갈래, new) 를 반환(0x13 이 다음 글자로 옮길 때 사용).
     fn restore_overwrite_in_history(&mut self) -> Option<(Category, u32)> {
-        let (cat, old, new) = self.last_overwrite.take()?;
+        // 먼저 엿보기만 한다. 기록된 새 낱자가 현재 이력에 실제로 있을 때만 되돌리고
+        // 기록을 소비한다. (삭제·백스페이스 등으로 그 낱자가 이미 사라졌으면 무동작 —
+        // 그래야 0x13 이 사라진 낱자를 되살리는 유령 입력을 만들지 않는다.)
+        let (cat, old, new) = *self.last_overwrite.as_ref()?;
         let pos = self
             .history
             .iter()
-            .rposition(|u| matches!(u, Unit::Jamo(j) if j.category == cat && j.cp == new));
-        if let Some(p) = pos {
-            self.history[p] = Unit::Jamo(Jamo::new(cat, old));
-        }
+            .rposition(|u| matches!(u, Unit::Jamo(j) if j.category == cat && j.cp == new))?;
+        self.history[pos] = Unit::Jamo(Jamo::new(cat, old));
+        self.last_overwrite = None;
         Some((cat, new))
     }
 
@@ -982,6 +987,12 @@ impl Engine {
     /// C0 특수글쇠 코드 분배.
     fn dispatch_command(&mut self, cmd: u32) -> KeyOutcome {
         use Category::{Cho, Jong, Jung};
+        // 무한 낱자 수정 분리/복원(0x13/0x14)을 제외한 모든 특수글쇠는 새 편집 동작이므로
+        // "직전 겹쳐쓰기" 기록을 무효화한다. (그 명령들이 이력을 바꿔 겹쳐쓴 낱자를 없애도
+        // 0x13/0x14 가 사라진 낱자를 되살리지 않도록.)
+        if cmd != 0x13 && cmd != 0x14 {
+            self.last_overwrite = None;
+        }
         match cmd {
             // 0x2~0x4: 특정 낱자(초/중/종성) 삭제 후 그 글자를 계속 조합.
             0x2 => {
@@ -1842,6 +1853,33 @@ mod tests {
         typ(&mut e, "ga"); // 가 (겹쳐쓰기 없음)
         let o = e.press(b'Q', false); // C0|0x14
         assert_eq!(o.preedit, "가");
+    }
+
+    #[test]
+    fn c0_infinite_restore_noop_after_backspace() {
+        // 겹쳐쓴 낱자를 백스페이스로 지운 뒤 복원(0x14)은 무동작이어야 한다(되살릴 것 없음).
+        let mut e = auto_engine();
+        typ(&mut e, "ga"); // 가
+        e.press(b'i', false); // ㅐ → 개(겹쳐쓰기)
+        let b = e.backspace(); // ㅐ 제거 → ㄱ
+        assert_eq!(b.preedit, "ㄱ");
+        let o = e.press(b'Q', false); // 0x14: 사라진 ㅐ를 되살리려 하면 안 됨
+        assert_eq!(o.commit, "");
+        assert_eq!(o.preedit, "ㄱ");
+    }
+
+    #[test]
+    fn c0_infinite_split_no_phantom_after_keep_only() {
+        // 겹쳐쓴 낱자를 다른 명령(초성만 남기기 0x15)으로 지운 뒤 분리(0x13)는 유령
+        // 낱자를 만들지 않아야 한다(예전 버그: 사라진 ㅐ가 다음 글자로 되살아남).
+        let mut e = auto_engine();
+        typ(&mut e, "ga"); // 가
+        e.press(b'i', false); // 개(ㅏ→ㅐ 겹침)
+        let g = e.press(b'G', false); // 0x15 초성만 남기기 → ㄱ (ㅐ 사라짐)
+        assert_eq!(g.preedit, "ㄱ");
+        let o = e.press(b'P', false); // 0x13 분리: 유령 ㅐ 없이 무동작
+        assert_eq!(o.commit, "");
+        assert_eq!(o.preedit, "ㄱ");
     }
 
     #[test]
