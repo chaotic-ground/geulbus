@@ -1,11 +1,11 @@
-//! presguel-ibus 엔진을 D-Bus 로 직접 구동해 보는 종단간 점검 도구.
+//! geulbus 엔진을 D-Bus 로 직접 구동해 보는 종단간 점검 도구.
 //!
-//! 실행 중인 presguel-ibus 프로세스(같은 ibus 버스에 등록됨)의 Factory 를 호출해
+//! 실행 중인 geulbus 프로세스(같은 ibus 버스에 등록됨)의 Factory 를 호출해
 //! 엔진을 만들고, 키 시퀀스를 ProcessKeyEvent 로 보내며 CommitText/UpdatePreeditText
 //! 신호를 받아 출력한다. IBusText 직렬화가 실제로 통하는지(데몬/엔진이 죽지 않는지)
 //! 확인하는 용도.
 //!
-//! 사용법: `cargo run -p presguel-ibus --example drive -- "kf kfhf"`
+//! 사용법: `cargo run -p geulbus --example drive -- "kf kfhf"`
 //! (공백은 그대로 space 키로 전송)
 
 use std::path::PathBuf;
@@ -127,20 +127,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = ibus_address()?;
     let conn = Builder::address(addr.as_str())?.build().await?;
 
-    // Factory.CreateEngine("presguel")
+    // Factory.CreateEngine("geulbus")
     let factory = zbus::Proxy::new(
         &conn,
-        "org.freedesktop.IBus.Presguel",
+        "org.freedesktop.IBus.Geulbus",
         "/org/freedesktop/IBus/Factory",
         "org.freedesktop.IBus.Factory",
     )
     .await?;
-    let engine_path: OwnedObjectPath = factory.call("CreateEngine", &"presguel").await?;
+    let engine_path: OwnedObjectPath = factory.call("CreateEngine", &"geulbus").await?;
     println!("engine path = {}", engine_path.as_str());
 
     let engine = zbus::Proxy::new(
         &conn,
-        "org.freedesktop.IBus.Presguel",
+        "org.freedesktop.IBus.Geulbus",
         engine_path.clone(),
         "org.freedesktop.IBus.Engine",
     )

@@ -1,4 +1,4 @@
-//! presguel-core — 날개셋(nalgaeset) 입력 설정을 해석하는 한글 조합 엔진.
+//! geulbus-core — 날개셋(nalgaeset) 입력 설정을 해석하는 한글 조합 엔진.
 //!
 //! ibus 등 프런트엔드와 무관한 순수 라이브러리. 임의의 `nalgaeset.xml` 설정을
 //! 파싱하여(`config`), 값-식을 평가하고(`expr`), 자모 단위를 모델링하며(`unit`),

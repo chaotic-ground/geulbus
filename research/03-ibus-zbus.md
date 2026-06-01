@@ -42,7 +42,7 @@ bus, registers a **Factory**, and the daemon calls `CreateEngine` on it.
    a unique name (the daemon's `Hello` handshake; zbus does this automatically on
    `Builder::address(...).build()`).
 4. Your process **requests the well-known bus name** = the component `<name>`
-   string (e.g. `org.freedesktop.IBus.Presguel`). In librush this is literally
+   string (e.g. `org.freedesktop.IBus.Geulbus`). In librush this is literally
    the same string used as the component `<name>` and the `request_name` argument.
 5. Your process **registers a Factory** object at path
    `/org/freedesktop/IBus/Factory` implementing `org.freedesktop.IBus.Factory`.
@@ -57,7 +57,7 @@ bus, registers a **Factory**, and the daemon calls `CreateEngine` on it.
 | Thing | Value |
 |---|---|
 | Engine bus address | from `IBUS_ADDRESS` env, else address file (section 5) — **not** session bus |
-| Well-known name to request | = component `<name>`, e.g. `org.freedesktop.IBus.Presguel` |
+| Well-known name to request | = component `<name>`, e.g. `org.freedesktop.IBus.Geulbus` |
 | Factory object path | `/org/freedesktop/IBus/Factory` |
 | Factory interface | `org.freedesktop.IBus.Factory` |
 | Factory method | `CreateEngine(name:s) -> (path:o)` |
@@ -67,37 +67,37 @@ bus, registers a **Factory**, and the daemon calls `CreateEngine` on it.
 
 ### Component `.xml` template (CRITICAL — copy this)
 
-Install to `/usr/share/ibus/component/presguel.xml`. Modeled on the live
+Install to `/usr/share/ibus/component/geulbus.xml`. Modeled on the live
 `hangul.xml` and on librush's `pmim_ibrus.xml`. The component `<name>` MUST equal
 the D-Bus well-known name your process requests.
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
-<!-- /usr/share/ibus/component/presguel.xml -->
+<!-- /usr/share/ibus/component/geulbus.xml -->
 <component>
-  <name>org.freedesktop.IBus.Presguel</name>
-  <description>Presguel Korean Input Method</description>
-  <exec>/usr/lib/presguel/presguel-ibus --ibus</exec>
+  <name>org.freedesktop.IBus.Geulbus</name>
+  <description>Geulbus Korean Input Method</description>
+  <exec>/usr/lib/geulbus/geulbus --ibus</exec>
   <version>0.1.0</version>
   <author>You &lt;you@example.com&gt;</author>
   <license>GPL</license>
-  <homepage>https://example.com/presguel</homepage>
-  <textdomain>presguel</textdomain>
+  <homepage>https://example.com/geulbus</homepage>
+  <textdomain>geulbus</textdomain>
 
   <engines>
     <engine>
-      <name>presguel</name>            <!-- the name passed to CreateEngine -->
+      <name>geulbus</name>            <!-- the name passed to CreateEngine -->
       <language>ko</language>
       <license>GPL</license>
       <author>You &lt;you@example.com&gt;</author>
-      <icon>presguel</icon>
+      <icon>geulbus</icon>
       <layout>kr</layout>
       <layout_variant>kr104</layout_variant>
-      <longname>Presguel (한글)</longname>
+      <longname>Geulbus (한글)</longname>
       <description>Korean Input Method (날개셋-style)</description>
       <rank>99</rank>
       <symbol>한</symbol>             <!-- shown in the panel; &#xD55C; == 한 -->
-      <!-- <setup>/usr/lib/presguel/presguel-setup</setup>  optional -->
+      <!-- <setup>/usr/lib/geulbus/geulbus-setup</setup>  optional -->
     </engine>
   </engines>
 </component>
@@ -106,10 +106,10 @@ the D-Bus well-known name your process requests.
 Notes:
 - `<name>` at top = well-known bus name your process requests.
 - `<engine><name>` = the string the daemon passes to `CreateEngine` (here
-  `"presguel"`); reject any other name in `create_engine`.
+  `"geulbus"`); reject any other name in `create_engine`.
 - `<layout>kr</layout>` puts the keyboard in the Korean physical layout; you still
   receive raw keysyms in `ProcessKeyEvent`.
-- After installing, `ibus restart` (or log out/in), then pick "Presguel" in the
+- After installing, `ibus restart` (or log out/in), then pick "Geulbus" in the
   IBus settings / GNOME input-source list.
 
 ### Alternative: dynamic registration (no file)
@@ -429,7 +429,7 @@ automatic. Then `request_name(well_known)` and serve objects via `object_server(
 use zbus::connection::Builder;
 let conn = Builder::address(addr.as_str())?.build().await?;
 let _unique = conn.unique_name();          // proves Hello succeeded
-conn.request_name("org.freedesktop.IBus.Presguel").await?;
+conn.request_name("org.freedesktop.IBus.Geulbus").await?;
 conn.object_server().at("/org/freedesktop/IBus/Factory", factory).await?;
 ```
 
@@ -552,7 +552,7 @@ struct Factory { conn: Connection, next: u32 }
 #[interface(name = "org.freedesktop.IBus.Factory")]
 impl Factory {
     async fn create_engine(&mut self, name: String) -> fdo::Result<ObjectPath<'_>> {
-        if name != "presguel" {
+        if name != "geulbus" {
             return Err(fdo::Error::Failed(format!("unknown engine: {name}")));
         }
         self.next += 1;
@@ -575,7 +575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .at("/org/freedesktop/IBus/Factory",
             Factory { conn: conn.clone(), next: 0 })
         .await?;
-    conn.request_name("org.freedesktop.IBus.Presguel").await?;
+    conn.request_name("org.freedesktop.IBus.Geulbus").await?;
     // keep the process alive forever
     std::future::pending::<()>().await;
     Ok(())
@@ -647,13 +647,13 @@ and you must commit directly instead.
 
 ---
 
-## Quick implementation checklist for Presguel
+## Quick implementation checklist for Geulbus
 
-1. `presguel-ibus` binary: resolve IBus address (librush `addr.rs` logic),
+1. `geulbus` binary: resolve IBus address (librush `addr.rs` logic),
    `Builder::address().build()`.
 2. Serve `Factory` at `/org/freedesktop/IBus/Factory`; `request_name(
-   "org.freedesktop.IBus.Presguel")`.
-3. `CreateEngine("presguel")` → serve `Engine` at `/org/freedesktop/IBus/Engine/1`,
+   "org.freedesktop.IBus.Geulbus")`.
+3. `CreateEngine("geulbus")` → serve `Engine` at `/org/freedesktop/IBus/Engine/1`,
    return that path.
 4. In `ProcessKeyEvent`: drop releases (`& 1<<30`), pass through special-modifier
    chords (return `false`), map printable `keyval` (0x20–0x7e) to your ASCII
@@ -661,7 +661,7 @@ and you must commit directly instead.
 5. Push composition via `UpdatePreeditText(make_preedit_text(s), cursor, true, 0)`;
    finalize via `CommitText(make_ibus_text(s))` + hide preedit.
 6. On `FocusOut`/`Reset`: commit-or-clear the in-progress syllable.
-7. Install `/usr/share/ibus/component/presguel.xml`; `ibus restart`; select engine.
+7. Install `/usr/share/ibus/component/geulbus.xml`; `ibus restart`; select engine.
 8. **Validate the IBusText signature is exactly `(sa{sv}sv)`** with a unit test
    (copy librush's) before sending anything live, or you risk crashing the daemon.
 

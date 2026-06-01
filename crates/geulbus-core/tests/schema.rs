@@ -4,11 +4,11 @@
 //!
 //! 검증 대상:
 //!  1. `tests/fixtures/*.xml` — 저장소 동봉 clean-room 예제(.set/.ist/.key). 항상 검사.
-//!  2. 사용자 실제 설정 — `PRESGUEL_TEST_CONFIG` 또는 provision `layout.xml` 가
+//!  2. 사용자 실제 설정 — `GEULBUS_TEST_CONFIG` 또는 provision `layout.xml` 가
 //!     있으면 추가 검사(없으면 skip).
 //!
 //! xmllint 가 없으면 기본적으로 skip 하되, 그 사실을 항상 stderr 로 알린다.
-//! CI 에서 "린트가 조용히 사라지는" 것을 막으려면 `PRESGUEL_REQUIRE_XMLLINT=1` 로
+//! CI 에서 "린트가 조용히 사라지는" 것을 막으려면 `GEULBUS_REQUIRE_XMLLINT=1` 로
 //! 강제하면 xmllint 부재 시 테스트가 실패한다.
 //!
 //! 스키마 출처: chaotic-ground/nalgaeset-reverse-spec (CC BY 4.0). `schema/` 참조.
@@ -24,18 +24,18 @@ fn xmllint_available() -> bool {
         .unwrap_or(false)
 }
 
-/// xmllint 가 있으면 true. 없으면 skip 신호(false)를 돌려주되, `PRESGUEL_REQUIRE_XMLLINT`
+/// xmllint 가 있으면 true. 없으면 skip 신호(false)를 돌려주되, `GEULBUS_REQUIRE_XMLLINT`
 /// 가 설정돼 있으면 패닉(CI 강제). "조용히 통과"가 아니라 항상 가시적으로 알린다.
 fn xmllint_or_skip(test: &str) -> bool {
     if xmllint_available() {
         return true;
     }
     assert!(
-        std::env::var_os("PRESGUEL_REQUIRE_XMLLINT").is_none(),
-        "{test}: xmllint(libxml2) 가 없는데 PRESGUEL_REQUIRE_XMLLINT 가 설정됨. \
+        std::env::var_os("GEULBUS_REQUIRE_XMLLINT").is_none(),
+        "{test}: xmllint(libxml2) 가 없는데 GEULBUS_REQUIRE_XMLLINT 가 설정됨. \
          CI 에서 스키마 린트가 사라지지 않도록 libxml2-utils(xmllint) 를 설치하라."
     );
-    eprintln!("skip({test}): xmllint(libxml2) 없음. PRESGUEL_REQUIRE_XMLLINT=1 로 강제 가능");
+    eprintln!("skip({test}): xmllint(libxml2) 없음. GEULBUS_REQUIRE_XMLLINT=1 로 강제 가능");
     false
 }
 
@@ -104,7 +104,7 @@ fn real_config_validates_against_schema() {
         return;
     }
     let xsd = require_schema();
-    let path = std::env::var("PRESGUEL_TEST_CONFIG")
+    let path = std::env::var("GEULBUS_TEST_CONFIG")
         .unwrap_or_else(|_| "/home/nemo/git/lens/provision/config/layout.xml".to_string());
     let path = PathBuf::from(path);
     if !path.exists() {

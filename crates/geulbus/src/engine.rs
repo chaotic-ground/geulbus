@@ -1,12 +1,12 @@
-//! `org.freedesktop.IBus.Engine` 구현. presguel-core 의 조합 엔진을 감싼다.
+//! `org.freedesktop.IBus.Engine` 구현. geulbus-core 의 조합 엔진을 감싼다.
 //!
 //! 키 이벤트(method)를 받아 조합하고, 결과를 CommitText / UpdatePreeditText
 //! (signal)로 데몬에 돌려준다. 참고: `research/03-ibus-zbus.md` §2,§4.
 
 use std::collections::HashMap;
 
-use presguel_core::expr::{Ctx, Expr, Value as ExprValue};
-use presguel_core::{us_qwerty_ascii, Config, Engine as Core};
+use geulbus_core::expr::{Ctx, Expr, Value as ExprValue};
+use geulbus_core::{us_qwerty_ascii, Config, Engine as Core};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::Value;
 use zbus::{fdo, interface};
@@ -27,17 +27,17 @@ const META_MASK: u32 = 1 << 28;
 // 단축키 수식어: Ctrl/Alt/Super(Mod4 + 가상)/Meta. 이 비트가 있으면 텍스트 입력이
 // 아니라 단축키 코드이므로 조합을 확정하고 응용/컴포지터로 통과시킨다. Super 는 가상
 // SUPER_MASK 가 잘 안 실려서 Mod4 도 함께 본다(안 그러면 Super+1 등이 입력으로 새어
-// presguel 이 먹어 버린다).
+// geulbus 이 먹어 버린다).
 const SPECIAL_MODS: u32 = CONTROL_MASK | MOD1_MASK | MOD4_MASK | SUPER_MASK | META_MASK;
 
 // 키심(keysym).
 const KEY_BACKSPACE: u32 = 0xff08;
 const KEY_HANGUL: u32 = 0xff31;
 
-/// `PRESGUEL_DEBUG_KEYS` 환경변수가 켜져 있으면 키 이벤트를 stderr 로 로깅한다.
+/// `GEULBUS_DEBUG_KEYS` 환경변수가 켜져 있으면 키 이벤트를 stderr 로 로깅한다.
 fn debug_keys_enabled() -> bool {
     matches!(
-        std::env::var("PRESGUEL_DEBUG_KEYS").ok().as_deref(),
+        std::env::var("GEULBUS_DEBUG_KEYS").ok().as_deref(),
         Some("1") | Some("true") | Some("yes") | Some("on")
     )
 }
@@ -302,9 +302,9 @@ impl IBusEngine {
     }
 
     /// 입력 모드 속성을 등록(패널이 심볼을 알도록). focus_in/enable 시 호출.
-    /// 레이블("Presguel 설정")은 패널 컨텍스트 메뉴에 뜨며, 누르면 property_activate 가 설정창을 연다.
+    /// 레이블("Geulbus 설정")은 패널 컨텍스트 메뉴에 뜨며, 누르면 property_activate 가 설정창을 연다.
     async fn register_props(&self, se: &SignalEmitter<'_>) {
-        let _ = Self::register_properties(se, make_prop_list(&self.mode_symbol(), "Presguel 설정"))
+        let _ = Self::register_properties(se, make_prop_list(&self.mode_symbol(), "Geulbus 설정"))
             .await;
     }
 
@@ -312,7 +312,7 @@ impl IBusEngine {
     async fn update_indicator(&self, se: &SignalEmitter<'_>) {
         let _ = Self::update_property(
             se,
-            make_input_mode_property(&self.mode_symbol(), "Presguel 설정"),
+            make_input_mode_property(&self.mode_symbol(), "Geulbus 설정"),
         )
         .await;
     }
@@ -361,14 +361,14 @@ impl IBusEngine {
         keycode: u32,
         state: u32,
     ) -> fdo::Result<bool> {
-        // 진단: PRESGUEL_DEBUG_KEYS=1 이면 받은 keyval/keycode/state 를 stderr 로 찍는다.
-        // presguel 활성 시 어떤 XKB 레이아웃 기준 keysym 이 오는지 확인용(드보락 vs us).
+        // 진단: GEULBUS_DEBUG_KEYS=1 이면 받은 keyval/keycode/state 를 stderr 로 찍는다.
+        // geulbus 활성 시 어떤 XKB 레이아웃 기준 keysym 이 오는지 확인용(드보락 vs us).
         if debug_keys_enabled() {
             let ch = char::from_u32(keyval)
                 .filter(|c| !c.is_control())
                 .unwrap_or(' ');
             eprintln!(
-                "presguel keyev: keyval=0x{keyval:04x} ({ch:?})  keycode=0x{keycode:x} ({keycode})  state=0x{state:x}"
+                "geulbus keyev: keyval=0x{keyval:04x} ({ch:?})  keycode=0x{keycode:x} ({keycode})  state=0x{state:x}"
             );
         }
         let class = self.classify(keyval, keycode, state);
@@ -553,9 +553,9 @@ impl IBusEngine {
     fn property_activate(&mut self, name: String, _state: u32) {
         // 패널 컨텍스트 메뉴에서 InputMode 속성(설정 항목)을 누르면 설정창을 띄운다.
         if name == "InputMode" {
-            let _ = std::process::Command::new("presguel-setup")
+            let _ = std::process::Command::new("geulbus-setup")
                 .spawn()
-                .or_else(|_| std::process::Command::new("/usr/local/bin/presguel-setup").spawn());
+                .or_else(|_| std::process::Command::new("/usr/local/bin/geulbus-setup").spawn());
         }
     }
 
@@ -604,7 +604,7 @@ impl IBusEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use presguel_core::Config;
+    use geulbus_core::Config;
 
     // VK_HANGUL 과 VK_CAPITAL 을 IME_SWITCH 로 둔 최소 설정.
     const MINI: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -742,7 +742,7 @@ mod tests {
 
     #[test]
     fn switch_expr_is_not_a_toggle() {
-        use presguel_core::expr::{Ctx, Value as EV};
+        use geulbus_core::expr::{Ctx, Value as EV};
         let e = engine();
         // ShortcutTable value="!A" → A=현재 항목. 0이면 1, 아니면 0.
         let expr = e.ime_switch.get(&0xffe5).expect("capslock switch expr");
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn super_combo_is_shortcut() {
         // Super+1 은 Mod4(1<<6)로 실려 온다. 단축키로 분류돼 통과해야 한다
-        // (안 그러면 presguel 이 '1' 을 입력으로 먹어 GNOME 단축키가 안 먹는다).
+        // (안 그러면 geulbus 이 '1' 을 입력으로 먹어 GNOME 단축키가 안 먹는다).
         assert_eq!(
             engine().classify(b'1' as u32, 2, MOD4_MASK),
             KeyClass::ShortcutCombo

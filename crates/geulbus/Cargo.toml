@@ -1,6 +1,6 @@
 [package]
-name = "presguel-ibus"
-description = "presguel: 날개셋 호환 ibus 한글 입력기 엔진 (zbus 기반)"
+name = "geulbus"
+description = "geulbus: 날개셋 호환 ibus 한글 입력기 엔진 (zbus 기반)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,11 +8,11 @@ repository.workspace = true
 authors.workspace = true
 
 [[bin]]
-name = "presguel-ibus"
+name = "geulbus"
 path = "src/main.rs"
 
 [dependencies]
-presguel-core.workspace = true
+geulbus-core.workspace = true
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 

@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-/// presguel 설정/데이터 디렉터리 이름.
-const APP_DIR: &str = "presguel";
+/// geulbus 설정/데이터 디렉터리 이름.
+const APP_DIR: &str = "geulbus";
 /// 자판(입력 설정) 파일의 표준 이름과 옛 이름(하위 호환).
 const LAYOUT_FILE: &str = "layout.xml";
 const LAYOUT_FILE_LEGACY: &str = "nalgaeset.xml";
@@ -23,8 +23,8 @@ pub fn xdg_config_home() -> Option<PathBuf> {
         })
 }
 
-/// presguel 사용자 설정 디렉터리(`$XDG_CONFIG_HOME/presguel`).
-pub fn presguel_config_dir() -> Option<PathBuf> {
+/// geulbus 사용자 설정 디렉터리(`$XDG_CONFIG_HOME/geulbus`).
+pub fn geulbus_config_dir() -> Option<PathBuf> {
     Some(xdg_config_home()?.join(APP_DIR))
 }
 
@@ -41,22 +41,22 @@ fn xdg_data_dirs() -> Vec<PathBuf> {
 }
 
 /// 자판(입력 설정) 파일 경로를 해석한다. 실제로 존재하는 첫 후보를 돌려준다
-/// (`$PRESGUEL_CONFIG` 는 존재 여부와 무관하게 그대로 사용). 탐색 순서:
+/// (`$GEULBUS_CONFIG` 는 존재 여부와 무관하게 그대로 사용). 탐색 순서:
 ///
-/// 1. `$PRESGUEL_CONFIG` (명시 지정)
-/// 2. `$XDG_CONFIG_HOME/presguel/layout.xml` (사용자)
-/// 3. `$XDG_CONFIG_HOME/presguel/nalgaeset.xml` (사용자, 옛 이름·하위 호환)
-/// 4. `<XDG_DATA_DIRS>/presguel/layout.xml` (시스템 기본값)
+/// 1. `$GEULBUS_CONFIG` (명시 지정)
+/// 2. `$XDG_CONFIG_HOME/geulbus/layout.xml` (사용자)
+/// 3. `$XDG_CONFIG_HOME/geulbus/nalgaeset.xml` (사용자, 옛 이름·하위 호환)
+/// 4. `<XDG_DATA_DIRS>/geulbus/layout.xml` (시스템 기본값)
 ///
 /// 모두 없으면 어디를 찾았는지 안내하는 에러.
 pub fn resolve_layout_path() -> Result<PathBuf, String> {
-    if let Ok(p) = std::env::var("PRESGUEL_CONFIG") {
+    if let Ok(p) = std::env::var("GEULBUS_CONFIG") {
         if !p.is_empty() {
             return Ok(PathBuf::from(p));
         }
     }
     let mut tried: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = presguel_config_dir() {
+    if let Some(dir) = geulbus_config_dir() {
         for name in [LAYOUT_FILE, LAYOUT_FILE_LEGACY] {
             let p = dir.join(name);
             if p.is_file() {
@@ -79,6 +79,6 @@ pub fn resolve_layout_path() -> Result<PathBuf, String> {
         .join("\n");
     Err(format!(
         "자판 파일을 찾지 못했습니다. 다음 위치를 확인했습니다:\n{list}\n\
-         PRESGUEL_CONFIG 환경변수로 경로를 지정하거나 위 중 한 곳에 두세요."
+         GEULBUS_CONFIG 환경변수로 경로를 지정하거나 위 중 한 곳에 두세요."
     ))
 }

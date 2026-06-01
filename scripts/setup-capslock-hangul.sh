@@ -15,18 +15,18 @@ xkb_dir="${XDG_CONFIG_HOME:-$HOME/.config}/xkb"
 key="org.gnome.desktop.input-sources"
 
 if [[ "${1:-}" == "--revert" ]]; then
-  # 옵션 목록에서 presguel:caps_hangul 제거
+  # 옵션 목록에서 geulbus:caps_hangul 제거
   cur="$(gsettings get "$key" xkb-options)"
-  new="$(printf '%s' "$cur" | sed "s/'presguel:caps_hangul'//; s/, ,/,/g; s/\[, /[/; s/, \]/]/")"
+  new="$(printf '%s' "$cur" | sed "s/'geulbus:caps_hangul'//; s/, ,/,/g; s/\[, /[/; s/, \]/]/")"
   [[ "$new" == "@as []" || "$new" == "[]" ]] && gsettings reset "$key" xkb-options || gsettings set "$key" xkb-options "$new"
-  rm -f "$xkb_dir/symbols/presguel" "$xkb_dir/rules/evdev"
+  rm -f "$xkb_dir/symbols/geulbus" "$xkb_dir/rules/evdev"
   echo "되돌림. 로그아웃/로그인 후 반영됩니다."
   exit 0
 fi
 
 mkdir -p "$xkb_dir/symbols" "$xkb_dir/rules"
 
-cat > "$xkb_dir/symbols/presguel" <<'XKB'
+cat > "$xkb_dir/symbols/geulbus" <<'XKB'
 // CapsLock 단독 → 한/영(Hangul), Shift+CapsLock → 평소 Caps Lock(잠금).
 partial modifier_keys
 xkb_symbols "caps_hangul" {
@@ -42,15 +42,15 @@ cat > "$xkb_dir/rules/evdev" <<'RULES'
 ! include %S/evdev
 
 ! option = symbols
-  presguel:caps_hangul = +presguel(caps_hangul)
+  geulbus:caps_hangul = +geulbus(caps_hangul)
 RULES
 
 # 기존 옵션 보존하며 추가
 cur="$(gsettings get "$key" xkb-options)"
 if [[ "$cur" == "@as []" || "$cur" == "[]" ]]; then
-  gsettings set "$key" xkb-options "['presguel:caps_hangul']"
-elif [[ "$cur" != *"presguel:caps_hangul"* ]]; then
-  gsettings set "$key" xkb-options "${cur%]}, 'presguel:caps_hangul']"
+  gsettings set "$key" xkb-options "['geulbus:caps_hangul']"
+elif [[ "$cur" != *"geulbus:caps_hangul"* ]]; then
+  gsettings set "$key" xkb-options "${cur%]}, 'geulbus:caps_hangul']"
 fi
 
 echo "적용값: $(gsettings get "$key" xkb-options)"

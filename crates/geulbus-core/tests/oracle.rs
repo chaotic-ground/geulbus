@@ -1,16 +1,16 @@
 //! 실제 `nalgaeset.xml`(저장소 바깥, 사용자 환경)에 대한 통합 검증.
 //!
-//! 설정 경로는 `PRESGUEL_TEST_CONFIG` 환경변수로 지정하거나, 없으면 이 머신의
+//! 설정 경로는 `GEULBUS_TEST_CONFIG` 환경변수로 지정하거나, 없으면 이 머신의
 //! provision 경로를 기본값으로 쓴다. 파일이 없으면 테스트를 건너뛴다(저장소에는
 //! 사용자 설정을 포함하지 않으므로 CI 에서는 자연히 skip).
 
 use std::path::PathBuf;
 
-use presguel_core::config::Config;
-use presguel_core::Engine;
+use geulbus_core::config::Config;
+use geulbus_core::Engine;
 
 fn config_path() -> Option<PathBuf> {
-    let p = std::env::var("PRESGUEL_TEST_CONFIG")
+    let p = std::env::var("GEULBUS_TEST_CONFIG")
         .unwrap_or_else(|_| "/home/nemo/git/lens/provision/config/layout.xml".to_string());
     let p = PathBuf::from(p);
     p.exists().then_some(p)
@@ -73,8 +73,8 @@ fn real_config_compiles() {
     assert_eq!(layout.keys.len(), 94);
 
     // 갈마들이 5쌍: ㄱ↔ㄲ ㄷ↔ㄸ ㅂ↔ㅃ ㅅ↔ㅆ ㅈ↔ㅉ (토글 경로)
-    use presguel_core::unit::TOGGLE;
-    use presguel_core::Category::*;
+    use geulbus_core::unit::TOGGLE;
+    use geulbus_core::Category::*;
     assert_eq!(layout.combine(Cho, 0x1100, TOGGLE), Some(0x1101)); // ㄱ→ㄲ
     assert_eq!(layout.combine(Cho, 0x1101, TOGGLE), Some(0x1100)); // ㄲ→ㄱ
                                                                    // 겹모음 6개
@@ -84,7 +84,7 @@ fn real_config_compiles() {
     assert_eq!(layout.combine(Jong, 0x11AF, 0x11BA), Some(0x11B3)); // ㄹ+ㅅ→ㄽ
 
     // 가상 단위 128/129/130 = ㅗ/ㅜ/ㅡ
-    use presguel_core::Jamo;
+    use geulbus_core::Jamo;
     assert_eq!(
         layout.virtual_units.get(&128),
         Some(&Jamo::new(Jung, 0x1169))

@@ -2,32 +2,32 @@
 <!--
   ibus 컴포넌트 정의 (참고용 템플릿).
   실제 설치본은 scripts/install.sh 가 <exec> 경로를 채워
-  ~/.config/ibus/component/presguel.xml 로 생성한다.
+  ~/.config/ibus/component/geulbus.xml 로 생성한다.
   컴포넌트 <name> 은 프로세스가 request_name 하는 D-Bus 이름과 같아야 한다.
 -->
 <component>
-  <name>org.freedesktop.IBus.Presguel</name>
-  <description>Presguel Korean Input Method</description>
-  <exec>/usr/bin/presguel-ibus --ibus</exec>
+  <name>org.freedesktop.IBus.Geulbus</name>
+  <description>Geulbus Korean Input Method</description>
+  <exec>/usr/bin/geulbus --ibus</exec>
   <version>0.1.0</version>
   <author>lens0021 &lt;lorentz0021@gmail.com&gt;</author>
   <license>LicenseRef-AllRightsReserved</license>
-  <homepage>https://github.com/lens0021/presguel</homepage>
-  <textdomain>presguel</textdomain>
+  <homepage>https://github.com/chaotic-ground/geulbus</homepage>
+  <textdomain>geulbus</textdomain>
 
   <engines>
     <engine>
-      <name>presguel</name>
+      <name>geulbus</name>
       <language>ko</language>
       <license>LicenseRef-AllRightsReserved</license>
       <author>lens0021 &lt;lorentz0021@gmail.com&gt;</author>
       <icon>ibus-hangul</icon>
       <layout>us</layout>
-      <longname>Presguel</longname>
-      <description>Presguel 한글 입력기</description>
+      <longname>Geulbus</longname>
+      <description>Geulbus 한글 입력기</description>
       <rank>50</rank>
       <symbol>가</symbol>
-      <setup>/usr/local/bin/presguel-setup</setup>
+      <setup>/usr/local/bin/geulbus-setup</setup>
     </engine>
   </engines>
 </component>

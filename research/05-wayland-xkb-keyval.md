@@ -108,7 +108,7 @@ Ground-truth pieces:
 
 **Yes for shortcuts; the only real decision is about Hangul jamo binding.**
 
-If presguel declares no layout override (`<layout>default</layout>` / omit)
+If geulbus declares no layout override (`<layout>default</layout>` / omit)
 and the user sets GNOME keyboard layout to Dvorak:
 
 - **Shortcut / non-Hangul keys** (Ctrl/Alt/Super+key, and any key you don't
@@ -142,7 +142,7 @@ Recommendation lands in **row 2** for a generic IME (§Recommendation).
 
 Installed evidence captured directly on this box:
 
-- `presguel.xml`: `<layout>us</layout>` (current)
+- `geulbus.xml`: `<layout>us</layout>` (current)
 - `hangul.xml` (ibus-hangul 1.5.5): `<layout>kr</layout>` +
   `<layout_variant>kr104</layout_variant>`
 - `chewing.xml`: `<layout>us</layout>`
@@ -256,7 +256,7 @@ Consequences:
 
 ---
 
-## Recommendation for presguel (generic, layout-agnostic IME)
+## Recommendation for geulbus (generic, layout-agnostic IME)
 
 1. **Change `<layout>us</layout>` → `<layout>default</layout>`** (or remove
    the element). Explicitly inherit the user's XKB layout. No-op on Wayland
@@ -284,9 +284,9 @@ Consequences:
    silently no-ops it. Users pick their Latin layout as a GNOME input source /
    XKB option themselves. **[STRONG]**
 
-Net: presguel becomes layout-agnostic. Shortcuts and Latin behavior follow the
+Net: geulbus becomes layout-agnostic. Shortcuts and Latin behavior follow the
 user's configured XKB layout (Dvorak/Colemak/us — all free); the only thing
-presguel pins is Hangul composition (ideally keyed to keycodes for stable jamo
+geulbus pins is Hangul composition (ideally keyed to keycodes for stable jamo
 positions).
 
 ---
@@ -296,17 +296,17 @@ positions).
 Quick local checks to confirm before committing the design:
 
 1. **Real keyval under Dvorak.** Set GNOME layout to English (Dvorak), switch
-   to presguel, log `ProcessKeyEvent` args, press physical QWERTY-R. Expect
+   to geulbus, log `ProcessKeyEvent` args, press physical QWERTY-R. Expect
    `keyval == 0x70 ('p')`; note the `keycode` value to settle the evdev vs +8
    offset. Settles §1 and the offset note.
-2. **`<layout>` ignored on Wayland.** With presguel active and
+2. **`<layout>` ignored on Wayland.** With geulbus active and
    `<layout>us</layout>`, a Dvorak user typing latin should still get Dvorak
    → confirms `<layout>` is ignored.
 3. **ForwardKeyEvent re-derivation.** Forward keyval=`p` with the QWERTY-R
    keycode into a text field; confirm the field shows the *layout* result, not
    `p`.
 
-(Local component-XML facts in §B captured directly and firm: presguel=`us`,
+(Local component-XML facts in §B captured directly and firm: geulbus=`us`,
 hangul=`kr`/`kr104`, chewing=`us`. Versions: IBus 1.5.33, mutter 49.5,
 gnome-shell 49.6.)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""presguel 설정창 (GTK4 + libadwaita).
+"""geulbus 설정창 (GTK4 + libadwaita).
 
 GNOME 최신(49) 정석 스타일: AdwApplicationWindow + AdwHeaderBar +
 AdwPreferencesGroup + AdwSwitchRow + AdwComboRow.
@@ -9,8 +9,8 @@ AdwPreferencesGroup + AdwSwitchRow + AdwComboRow.
   - 간단 모드 on 일 때: 한글 InputEntry / 영문 배치 InputEntry 를 드롭다운으로 지정
   - 자판 다시 불러오기 버튼(입력기 재시작): nalgaeset.xml 변경은 자동 반영 안 됨
 
-설정은 ~/.config/presguel/config.ini (key=value) 에 저장한다(엔진과 같은 형식).
-드롭다운 항목은 자판 파일(~/.config/presguel/layout.xml, 엔진과 같은 탐색 순서)의
+설정은 ~/.config/geulbus/config.ini (key=value) 에 저장한다(엔진과 같은 형식).
+드롭다운 항목은 자판 파일(~/.config/geulbus/layout.xml, 엔진과 같은 탐색 순서)의
 InputEntry 들에서 읽는다.
 """
 
@@ -28,11 +28,11 @@ from gi.repository import Gtk, Adw, Gio
 
 def config_dir():
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "presguel")
+    return os.path.join(base, "geulbus")
 
 
 def ini_path():
-    return os.environ.get("PRESGUEL_CONFIG_INI") or os.path.join(
+    return os.environ.get("GEULBUS_CONFIG_INI") or os.path.join(
         config_dir(), "config.ini"
     )
 
@@ -45,19 +45,19 @@ def data_dirs():
 def xml_path():
     """자판 파일 경로를 엔진과 같은 순서로 해석한다. 존재하는 첫 후보를 쓰고,
     하나도 없으면 사용자 기본 경로(새 이름)를 돌려준다(메시지·생성용).
-      1. $PRESGUEL_CONFIG
-      2. ~/.config/presguel/layout.xml
-      3. ~/.config/presguel/nalgaeset.xml (옛 이름, 하위 호환)
-      4. <XDG_DATA_DIRS>/presguel/layout.xml (시스템 기본값)
+      1. $GEULBUS_CONFIG
+      2. ~/.config/geulbus/layout.xml
+      3. ~/.config/geulbus/nalgaeset.xml (옛 이름, 하위 호환)
+      4. <XDG_DATA_DIRS>/geulbus/layout.xml (시스템 기본값)
     """
-    env = os.environ.get("PRESGUEL_CONFIG")
+    env = os.environ.get("GEULBUS_CONFIG")
     if env:
         return env
     candidates = [
         os.path.join(config_dir(), "layout.xml"),
         os.path.join(config_dir(), "nalgaeset.xml"),
     ]
-    candidates += [os.path.join(d, "presguel", "layout.xml") for d in data_dirs()]
+    candidates += [os.path.join(d, "geulbus", "layout.xml") for d in data_dirs()]
     for p in candidates:
         if os.path.isfile(p):
             return p
@@ -87,7 +87,7 @@ def load_ini():
 def save_ini(pick, entry_idx, shortcuts):
     os.makedirs(config_dir(), exist_ok=True)
     body = (
-        "# presguel 설정 (presguel-setup 가 생성). key=value 형식.\n"
+        "# geulbus 설정 (geulbus-setup 가 생성). key=value 형식.\n"
         "# pick_entry: 켜면 아래에서 고른 항목 하나만 사용(항목 전환 단축글쇠 없음).\n"
         "#            끄면 날개셋 설정의 모든 InputEntry 를 쓰고, 항목 전환은 ShortcutTable 의\n"
         "#            IME_SWITCH 단축글쇠가 등록됐을 때만 동작.\n"
@@ -140,7 +140,7 @@ def _to_int(s, default=0):
 
 class SetupWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Presguel 설정")
+        super().__init__(application=app, title="Geulbus 설정")
         self.set_default_size(460, -1)
 
         cfg = load_ini()
@@ -205,7 +205,7 @@ class SetupWindow(Adw.ApplicationWindow):
         kbd_group = Adw.PreferencesGroup(
             title="키보드 배열",
             description="단축키(Ctrl/Alt+키)와 영문은 GNOME 설정 → 키보드 → 입력 소스에서 "
-            "'Presguel (Dvorak)' 처럼 원하는 배열을 고르면 됩니다. 한글 자판은 어느 배열에서도 "
+            "'Geulbus (Dvorak)' 처럼 원하는 배열을 고르면 됩니다. 한글 자판은 어느 배열에서도 "
             "같은 자리입니다.",
         )
         page.add(kbd_group)
@@ -272,7 +272,7 @@ class SetupWindow(Adw.ApplicationWindow):
 class SetupApp(Adw.Application):
     def __init__(self):
         super().__init__(
-            application_id="org.freedesktop.IBus.Presguel.Setup",
+            application_id="org.freedesktop.IBus.Geulbus.Setup",
             flags=Gio.ApplicationFlags.FLAGS_NONE,
         )
 

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Geulbus Settings
+Name[ko]=Geulbus 설정
+Comment=Set Geulbus input method preferences
+Comment[ko]=Geulbus 입력기를 설정합니다
+Exec=/usr/local/bin/geulbus-setup
+Icon=ibus-hangul
+NoDisplay=true
+Terminal=false
+Type=Application
+StartupNotify=true
+Categories=Settings;

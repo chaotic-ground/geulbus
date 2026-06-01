@@ -1,4 +1,4 @@
-//! 사용자 설정(`~/.config/presguel/config.ini`) 읽기.
+//! 사용자 설정(`~/.config/geulbus/config.ini`) 읽기.
 //!
 //! 형식은 `key=value`(한 줄에 하나, `#` 주석 무시) — addr.rs 의 IBus 주소 파일과 같은
 //! 단순 형식이라 의존성이 없고, Python 설정창도 쉽게 읽고 쓴다.
@@ -44,7 +44,7 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// 표준 경로(`$PRESGUEL_CONFIG_INI` 또는 `~/.config/presguel/config.ini`)에서 읽는다.
+    /// 표준 경로(`$GEULBUS_CONFIG_INI` 또는 `~/.config/geulbus/config.ini`)에서 읽는다.
     /// 파일이 없으면 기본값.
     pub fn load() -> Self {
         match Self::path().and_then(|p| std::fs::read_to_string(p).ok()) {
@@ -55,12 +55,12 @@ impl Settings {
 
     /// 설정 파일 경로.
     pub fn path() -> Option<PathBuf> {
-        if let Ok(p) = std::env::var("PRESGUEL_CONFIG_INI") {
+        if let Ok(p) = std::env::var("GEULBUS_CONFIG_INI") {
             if !p.is_empty() {
                 return Some(PathBuf::from(p));
             }
         }
-        Some(crate::paths::presguel_config_dir()?.join("config.ini"))
+        Some(crate::paths::geulbus_config_dir()?.join("config.ini"))
     }
 
     /// `key=value` 본문을 파싱. 알 수 없는 키/값은 무시하고 기본값 유지.

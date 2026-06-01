@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Clean-room 스키마 검증 픽스처(종합 설정 .set). 실제 날개셋 파일이 아니라
-     presguel 가 읽는 요소를 두루 포함하도록 손으로 작성한 최소 예제다. -->
+     geulbus 가 읽는 요소를 두루 포함하도록 손으로 작성한 최소 예제다. -->
 <EditContextSetting version="0x500">
   <EditorLayer flag="DEL_MOVE|ARROW_MOVE">
     <ShortcutTable>

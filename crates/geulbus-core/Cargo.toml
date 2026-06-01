@@ -1,9 +1,10 @@
 [package]
-name = "presguel-core"
+name = "geulbus-core"
 description = "날개셋(nalgaeset) 입력 설정을 해석하는 한글 조합 엔진 (ibus 비의존 순수 라이브러리)"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# geulbus-core 만 오픈소스(재사용 가능). 나머지 워크스페이스(geulbus 등)는 ARR.
+license = "MIT OR Apache-2.0"
 repository.workspace = true
 authors.workspace = true
 

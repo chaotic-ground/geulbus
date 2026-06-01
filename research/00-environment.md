@@ -34,8 +34,8 @@ Order:
   `~/.local/share/ibus/component/` (XDG_DATA_HOME) or `~/.config/ibus/component/` was NOT picked
   up. So installation here REQUIRES the system dir + `sudo ibus write-cache --system`.
   (`scripts/install.sh` does this.) Activation confirmed: `ibus list-engine` shows
-  `presguel - Presguel (날개셋 세벌식)`, and `ibus engine presguel` makes the daemon exec
-  `/usr/local/bin/presguel-ibus --ibus`.
+  `geulbus - Geulbus (날개셋 세벌식)`, and `ibus engine geulbus` makes the daemon exec
+  `/usr/local/bin/geulbus --ibus`.
 
 ## Reference component template (ibus-hangul)
 `/usr/share/ibus/component/hangul.xml`:

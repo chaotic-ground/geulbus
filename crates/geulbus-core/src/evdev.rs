@@ -1,6 +1,6 @@
 //! Linux evdev keycode → 물리 키 위치의 US-QWERTY ASCII(shift 없는 기준) 매핑.
 //!
-//! 날개셋이 Windows 에서 스캔코드로 "물리 자리"를 잡았듯, presguel 도 keycode 로 물리
+//! 날개셋이 Windows 에서 스캔코드로 "물리 자리"를 잡았듯, geulbus 도 keycode 로 물리
 //! 위치를 잡는다. keyval 은 사용자 XKB 레이아웃(드보락 등)에 따라 흔들리지만 keycode 는
 //! 레이아웃과 무관하게 물리 위치를 가리키므로, KeyTable(물리 자리 기준)을 keycode 로
 //! 조회하면 어떤 영문 배열에서도 세벌식 자리가 고정된다.
