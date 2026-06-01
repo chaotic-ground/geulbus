@@ -8,5 +8,6 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+hanmo = "0.1"
 quick-xml.workspace = true
 thiserror.workspace = true

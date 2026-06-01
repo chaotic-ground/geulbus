@@ -10,7 +10,6 @@
 
 use crate::config::{BkspUnit, Layout};
 use crate::expr::{Ctx, Value};
-use crate::jamo;
 use crate::ngs_seq::ngs_seq;
 use crate::unit::{self, Category, Jamo, Unit};
 
@@ -121,7 +120,7 @@ impl Engine {
         }
         // 초성+중성이 모두 있으면 음절 블록.
         if let (Some(cho), Some(jung)) = (syl.cho, syl.jung) {
-            if let Some(ch) = jamo::compose(cho, jung, syl.jong) {
+            if let Some(ch) = hanmo::compose(cho, jung, syl.jong) {
                 return ch.to_string(); // 현대 완성형
             }
             // 옛한글: 첫가끝 조합용 자모 시퀀스
@@ -836,8 +835,8 @@ impl Engine {
         if cho.is_none() && jong.is_none() {
             return self.composing_outcome();
         }
-        let new_cho = jong.and_then(unit::jong_to_cho);
-        let new_jong = cho.and_then(unit::cho_to_jong);
+        let new_cho = jong.and_then(hanmo::jong_to_cho);
+        let new_jong = cho.and_then(hanmo::cho_to_jong);
         // 변환 불가(대응 낱자 없음: ㄸㅃㅉ 초성, 겹받침 등)면 안전하게 무동작.
         if (jong.is_some() && new_cho.is_none()) || (cho.is_some() && new_jong.is_none()) {
             return self.composing_outcome();
@@ -877,7 +876,7 @@ impl Engine {
         let commit = self.commit_current();
         // 떼어낸 종성 자음을 초성으로 바꿔 새 음절 시작.
         let moved = match moved {
-            Unit::Jamo(j) => unit::jong_to_cho(j.cp)
+            Unit::Jamo(j) => hanmo::jong_to_cho(j.cp)
                 .map(|c| Unit::Jamo(Jamo::new(Category::Cho, c)))
                 .unwrap_or(Unit::Jamo(j)),
             other => other,
@@ -960,7 +959,7 @@ impl Engine {
         units
             .into_iter()
             .map(|u| match u {
-                Unit::Jamo(j) if j.category == Category::Cho => unit::cho_to_jong(j.cp)
+                Unit::Jamo(j) if j.category == Category::Cho => hanmo::cho_to_jong(j.cp)
                     .map(|c| Unit::Jamo(Jamo::new(Category::Jong, c)))
                     .unwrap_or(u),
                 other => other,

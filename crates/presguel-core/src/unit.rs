@@ -3,8 +3,8 @@
 //! `H3|<operand>` 의 operand 는 니모닉(`_GG`, `O_`, `RS`)이거나 숫자(`0x1F4`,
 //! `0x810000`)다. 니모닉은 위치(초/중/종)와 글자 정체를, 숫자는 갈마들이 토글(500)이나
 //! 가상 단위(`id<<16`)를 나타낸다. 참고: `research/01-nalgaeset-format.md` §2,§7.
-
-use crate::jamo;
+//!
+//! 한글 자모 유니코드 사실(조합/분해, 호환 자모 다리)은 `hanmo` 크레이트에 있다.
 
 /// 자모의 위치(낱자 갈래).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -34,9 +34,9 @@ impl Jamo {
     /// (이 경우 설정의 FinalConvTable 에 의존).
     pub fn default_compat(&self) -> Option<u32> {
         match self.category {
-            Category::Cho => jamo::cho_index(self.cp).map(|i| CHO_COMPAT[i as usize]),
-            Category::Jung => jamo::jung_index(self.cp).map(|i| JUNG_COMPAT[i as usize]),
-            Category::Jong => jamo::jong_index(self.cp).map(|i| JONG_COMPAT[i as usize]),
+            Category::Cho => hanmo::cho_compat(self.cp),
+            Category::Jung => hanmo::jung_compat(self.cp),
+            Category::Jong => hanmo::jong_compat(self.cp),
         }
     }
 }
@@ -54,67 +54,6 @@ pub enum Unit {
 
 /// 갈마들이 토글을 나타내는 내부 단위 값.
 pub const TOGGLE: u32 = 500;
-
-// ── 호환 자모(U+31xx) 표: 조합용 배열과 인덱스가 1:1 대응 ─────────────────────
-
-/// 현대 초성 인덱스 → 호환 자모.
-pub const CHO_COMPAT: [u32; 19] = [
-    0x3131, 0x3132, 0x3134, 0x3137, 0x3138, 0x3139, 0x3141, 0x3142, 0x3143, 0x3145, 0x3146, 0x3147,
-    0x3148, 0x3149, 0x314A, 0x314B, 0x314C, 0x314D, 0x314E,
-];
-
-/// 현대 중성 인덱스 → 호환 자모(U+314F..=U+3163, 연속).
-pub const JUNG_COMPAT: [u32; 21] = [
-    0x314F, 0x3150, 0x3151, 0x3152, 0x3153, 0x3154, 0x3155, 0x3156, 0x3157, 0x3158, 0x3159, 0x315A,
-    0x315B, 0x315C, 0x315D, 0x315E, 0x315F, 0x3160, 0x3161, 0x3162, 0x3163,
-];
-
-/// 종성 인덱스(0=없음) → 호환 자모. 0 자리는 0.
-pub const JONG_COMPAT: [u32; 28] = [
-    0x0000, 0x3131, 0x3132, 0x3133, 0x3134, 0x3135, 0x3136, 0x3137, 0x3139, 0x313A, 0x313B, 0x313C,
-    0x313D, 0x313E, 0x313F, 0x3140, 0x3141, 0x3142, 0x3144, 0x3145, 0x3146, 0x3147, 0x3148, 0x314A,
-    0x314B, 0x314C, 0x314D, 0x314E,
-];
-
-fn cho_cp_for_compat(compat: u32) -> Option<u32> {
-    CHO_COMPAT
-        .iter()
-        .position(|&c| c == compat)
-        .map(|i| jamo::CHO[i])
-}
-fn jung_cp_for_compat(compat: u32) -> Option<u32> {
-    JUNG_COMPAT
-        .iter()
-        .position(|&c| c == compat)
-        .map(|i| jamo::JUNG[i])
-}
-fn jong_cp_for_compat(compat: u32) -> Option<u32> {
-    // 인덱스 0 (받침 없음)은 제외.
-    JONG_COMPAT
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, &c)| c == compat)
-        .map(|(i, _)| jamo::JONG[i])
-}
-
-fn is_vowel_compat(compat: u32) -> bool {
-    (0x314F..=0x3163).contains(&compat)
-}
-
-/// 초성 코드포인트를 같은 자음의 종성 코드포인트로 바꾼다(대응 없으면 None).
-/// 예: ㄱ초성(U+1100) → ㄱ종성(U+11A8). C0 특수글쇠(초·종성 맞바꾸기 등)에서 쓴다.
-pub fn cho_to_jong(cho_cp: u32) -> Option<u32> {
-    let compat = jamo::cho_index(cho_cp).map(|i| CHO_COMPAT[i as usize])?;
-    jong_cp_for_compat(compat)
-}
-
-/// 종성 코드포인트를 같은 자음의 초성 코드포인트로 바꾼다(대응 없으면 None).
-/// 예: ㅇ종성(U+11BC) → ㅇ초성(U+110B). 도깨비불·초종성 맞바꾸기에서 쓴다.
-pub fn jong_to_cho(jong_cp: u32) -> Option<u32> {
-    let compat = jamo::jong_index(jong_cp).map(|i| JONG_COMPAT[i as usize])?;
-    cho_cp_for_compat(compat)
-}
 
 /// 니모닉의 "핵심 토큰"(밑줄 제거) → 호환 자모(글자 정체). 위치 무관.
 fn mnemonic_to_compat(core: &str) -> Option<u32> {
@@ -189,16 +128,16 @@ pub fn resolve_mnemonic(s: &str, ctx: Option<Category>) -> Option<Unit> {
     };
     let compat = mnemonic_to_compat(core)?;
     let category = ctx.or(pos_category).unwrap_or_else(|| {
-        if is_vowel_compat(compat) {
+        if hanmo::is_vowel_compat(compat) {
             Category::Jung
         } else {
             Category::Cho
         }
     });
     let cp = match category {
-        Category::Cho => cho_cp_for_compat(compat)?,
-        Category::Jung => jung_cp_for_compat(compat)?,
-        Category::Jong => jong_cp_for_compat(compat)?,
+        Category::Cho => hanmo::cho_cp_for_compat(compat)?,
+        Category::Jung => hanmo::jung_cp_for_compat(compat)?,
+        Category::Jong => hanmo::jong_cp_for_compat(compat)?,
     };
     Some(Unit::Jamo(Jamo::new(category, cp)))
 }
