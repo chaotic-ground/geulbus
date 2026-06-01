@@ -21,9 +21,14 @@ const SHIFT_MASK: u32 = 1 << 0;
 const LOCK_MASK: u32 = 1 << 1; // Caps Lock
 const CONTROL_MASK: u32 = 1 << 2;
 const MOD1_MASK: u32 = 1 << 3; // Alt
-const SUPER_MASK: u32 = 1 << 26;
+const MOD4_MASK: u32 = 1 << 6; // Super/Win 키가 실제로 실려 오는 비트(표준 XKB 매핑).
+const SUPER_MASK: u32 = 1 << 26; // ibus 가상 Super 마스크(설정에 따라 안 실릴 때가 많음).
 const META_MASK: u32 = 1 << 28;
-const SPECIAL_MODS: u32 = CONTROL_MASK | MOD1_MASK | SUPER_MASK | META_MASK;
+// 단축키 수식어: Ctrl/Alt/Super(Mod4 + 가상)/Meta. 이 비트가 있으면 텍스트 입력이
+// 아니라 단축키 코드이므로 조합을 확정하고 응용/컴포지터로 통과시킨다. Super 는 가상
+// SUPER_MASK 가 잘 안 실려서 Mod4 도 함께 본다(안 그러면 Super+1 등이 입력으로 새어
+// presguel 이 먹어 버린다).
+const SPECIAL_MODS: u32 = CONTROL_MASK | MOD1_MASK | MOD4_MASK | SUPER_MASK | META_MASK;
 
 // 키심(keysym).
 const KEY_BACKSPACE: u32 = 0xff08;
@@ -795,6 +800,21 @@ mod tests {
         // Ctrl+물리C(keycode 46) → 단축키(통과). keycode 있어도 ShortcutCombo 가 우선.
         assert_eq!(
             engine().classify(b'c' as u32, 46, CONTROL_MASK),
+            KeyClass::ShortcutCombo
+        );
+    }
+
+    #[test]
+    fn super_combo_is_shortcut() {
+        // Super+1 은 Mod4(1<<6)로 실려 온다. 단축키로 분류돼 통과해야 한다
+        // (안 그러면 presguel 이 '1' 을 입력으로 먹어 GNOME 단축키가 안 먹는다).
+        assert_eq!(
+            engine().classify(b'1' as u32, 2, MOD4_MASK),
+            KeyClass::ShortcutCombo
+        );
+        // 가상 SUPER_MASK 로 실려 오는 환경도 동일.
+        assert_eq!(
+            engine().classify(b'1' as u32, 2, SUPER_MASK),
             KeyClass::ShortcutCombo
         );
     }
