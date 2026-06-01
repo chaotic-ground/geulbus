@@ -67,6 +67,10 @@ pub struct Engine {
     /// 이력 재생(replay) 중인가. 재생 중에는 put_modify 의 겹쳐쓰기 기록을 멈춘다(실제
     /// 입력이 아니라 재구성이므로). C0 편집 명령들이 cur 을 안전하게 다시 만들 때 쓴다.
     replaying: bool,
+    /// 프런트엔드가 surrounding-text(앞 확정 글자 삭제·읽기)를 실제로 지원하는가.
+    /// 앞 글자에 결합하는 특수글쇠(낱자 재결합·앞으로 이동 등)는 이게 켜졌을 때만
+    /// 동작한다(끄여 있으면 무동작 — 앱 화면과 내부 버퍼가 어긋나지 않도록).
+    surrounding_ok: bool,
 }
 
 impl Engine {
@@ -81,11 +85,17 @@ impl Engine {
             prev_syllables: Vec::new(),
             last_overwrite: None,
             replaying: false,
+            surrounding_ok: false,
         }
     }
 
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    /// 프런트엔드의 surrounding-text 지원 여부를 알린다(앞 글자 결합 특수글쇠 게이트).
+    pub fn set_surrounding_ok(&mut self, ok: bool) {
+        self.surrounding_ok = ok;
     }
 
     /// 조합 중인 내용이 없는가.
@@ -903,6 +913,72 @@ impl Engine {
         self.commit_then_start_with(commit, vec![Unit::Jamo(Jamo::new(cat, new))])
     }
 
+    /// 0x88~0x8B Backspace 특수글쇠: 백스페이스를 임의 글쇠에 배당한 것.
+    /// always_consume(0x8A/0x8B)면 비조합·미달라붙기여도 글쇠를 가로챈다(원시 문자 미입력).
+    fn cmd_backspace(&mut self, always_consume: bool) -> KeyOutcome {
+        let mut out = self.backspace();
+        if always_consume {
+            out.consumed = true;
+        }
+        out
+    }
+
+    /// 단위가 초성뿐인 두벌식 형식이면 그 초성을 종성으로 바꾼 단위 목록을 돌려준다.
+    /// (낱자 재결합 두벌식 적용 0x1E/0x20)
+    fn dubeol_cho_to_jong(units: Vec<Unit>) -> Vec<Unit> {
+        units
+            .into_iter()
+            .map(|u| match u {
+                Unit::Jamo(j) if j.category == Category::Cho => unit::cho_to_jong(j.cp)
+                    .map(|c| Unit::Jamo(Jamo::new(Category::Jong, c)))
+                    .unwrap_or(u),
+                other => other,
+            })
+            .collect()
+    }
+
+    /// 앞의 확정 글자(prev_syllables 맨 위)를 되살려 현재 조합 낱자들을 그 위에 결합하고,
+    /// 결합된 글자를 조합 상태로 만든다. delete_before=1 로 앱의 옛 앞 글자를 지우게 한다.
+    /// `first_cat` 가 있으면(0x5~0x7) 그 성분 단위를 앞으로 재배치한다. `dubeol` 이면
+    /// 초성뿐인 현재 글자의 초성을 종성으로 바꿔 결합한다(0x1E). surrounding-text 미지원
+    /// 이거나 앞 글자가 없으면 무동작(앱과 어긋나지 않도록).
+    fn recombine_forward(&mut self, dubeol: bool, first_cat: Option<Category>) -> KeyOutcome {
+        let cho_only = self.cur.cho.is_some() && self.cur.jung.is_none() && self.cur.jong.is_none();
+        if !self.surrounding_ok || self.prev_syllables.is_empty() || self.cur.is_empty() {
+            return self.composing_outcome();
+        }
+        let prev = self.prev_syllables.pop().unwrap();
+        let mut cur_units = std::mem::take(&mut self.history);
+        if let Some(cat) = first_cat {
+            let layout = &self.layout;
+            let (mut first, rest): (Vec<Unit>, Vec<Unit>) = cur_units
+                .into_iter()
+                .partition(|u| Self::unit_cat(layout, u) == Some(cat));
+            first.extend(rest);
+            cur_units = first;
+        }
+        if dubeol && cho_only {
+            cur_units = Self::dubeol_cho_to_jong(cur_units);
+        }
+        self.cur = Syllable::default();
+        self.history.clear();
+        self.auto_state = self.layout.automata_start;
+        self.replaying = true;
+        for u in prev {
+            let _ = self.feed_unit(u);
+        }
+        for u in cur_units {
+            let _ = self.feed_unit(u);
+        }
+        self.replaying = false;
+        KeyOutcome {
+            commit: String::new(),
+            preedit: self.preedit(),
+            consumed: true,
+            delete_before: 1,
+        }
+    }
+
     /// C0 특수글쇠 코드 분배.
     fn dispatch_command(&mut self, cmd: u32) -> KeyOutcome {
         use Category::{Cho, Jong, Jung};
@@ -950,7 +1026,19 @@ impl Engine {
             0x18 => self.cmd_swap_cho_jong(),
             0x21 => self.cmd_split_last_key(),
             0x23 => self.cmd_swap_last_two_keys(),
-            // 미구현/미지원(cursor 이동·Del·한자 후보 변환 등): 현재 음절만 확정.
+            // 0x5~0x7: 초/중/종성을 앞 글자로 이동(앞 글자에 결합, 그 성분을 앞에 둠).
+            0x5 => self.recombine_forward(false, Some(Cho)),
+            0x6 => self.recombine_forward(false, Some(Jung)),
+            0x7 => self.recombine_forward(false, Some(Jong)),
+            // 0x1D/0x1E: 현재 조합 글자를 앞 글자에 결합(0x1E 는 두벌식 초성→종성 변환).
+            0x1D => self.recombine_forward(false, None),
+            0x1E => self.recombine_forward(true, None),
+            // 0x88~0x8B: Backspace 1~4(0x8A/0x8B 는 항상 가로챔).
+            0x88 | 0x89 => self.cmd_backspace(false),
+            0x8A | 0x8B => self.cmd_backspace(true),
+            // 미구현/미지원(cursor 이동·Del·뒤 글자 재결합 0x1F/0x20·한자 후보 변환 등):
+            // 현재 음절만 확정. 0x1F/0x20 은 cursor 뒤 글자 삭제(forward delete)가 IBus/
+            // Wayland 에서 불가해 보류.
             _ => {
                 let commit = self.commit_and_clear();
                 KeyOutcome {
@@ -1201,6 +1289,11 @@ mod tests {
           <Key at="0x51" value="C0|0x14"/> <!-- Q 무한낱자수정 복원 -->
           <Key at="0x52" value="C0|0x21"/> <!-- R 마지막 한 타 분리 -->
           <Key at="0x53" value="C0|0x23"/> <!-- S 직전 두 글쇠 교환 -->
+          <Key at="0x54" value="C0|0x1D"/> <!-- T 낱자 재결합(앞으로) -->
+          <Key at="0x55" value="C0|0x1E"/> <!-- U 낱자 재결합(앞으로, 두벌식) -->
+          <Key at="0x56" value="C0|0x5"/>  <!-- V 초성 앞으로 이동 -->
+          <Key at="0x57" value="C0|0x88"/> <!-- W Backspace 1 -->
+          <Key at="0x58" value="C0|0x8A"/> <!-- X Backspace 3(항상 가로챔) -->
         </KeyTable>
       </InputSchemeSetting>
       <GeneratorSetting object="CNgsImeEx">
@@ -1761,5 +1854,66 @@ mod tests {
         let o = e.press(b'S', false); // C0|0x23 직전 두 글쇠 교환
         assert!(o.consumed);
         assert_eq!(e.cur.jung, Some(0x1169)); // ㅗ (재결합 안 됨)
+    }
+
+    // ── Tier B/C: Backspace 변형 · 앞 글자 결합(surrounding-text 필요) ──────────
+
+    #[test]
+    fn c0_backspace1_like_bksp() {
+        // 0x88 Backspace 1: 간 → 마지막 한 타(ㄴ) 제거 → 가.
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'W', false); // C0|0x88
+        assert!(o.consumed);
+        assert_eq!(o.preedit, "가");
+    }
+
+    #[test]
+    fn c0_backspace3_always_consumes() {
+        // 0x8A Backspace 3: 빈 상태에서도 글쇠를 가로챈다(0x88 은 통과).
+        let mut e = auto_engine();
+        let o3 = e.press(b'X', false); // C0|0x8A, 빈 상태
+        assert!(o3.consumed);
+        let mut e2 = auto_engine();
+        let o1 = e2.press(b'W', false); // C0|0x88, 빈 상태 → 통과
+        assert!(!o1.consumed);
+    }
+
+    #[test]
+    fn c0_recombine_forward_jong() {
+        // 낱자 재결합(앞으로): 간 → 0xA(가+ㄴ) → 0x1D 로 ㄴ을 앞 글자 가에 도로 결합 → 간.
+        // surrounding-text 지원 가정. delete_before=1 로 앱의 옛 "가"를 지운다.
+        let mut e = auto_engine();
+        e.set_surrounding_ok(true);
+        typ(&mut e, "gam"); // 간
+        let d = e.press(b'D', false); // 0xA: "가" 확정 + 종성 ㄴ 대기
+        assert_eq!(d.commit, "가");
+        let o = e.press(b'T', false); // 0x1D 재결합(앞으로)
+        assert_eq!(o.preedit, "간");
+        assert_eq!(o.delete_before, 1);
+        assert!(o.consumed);
+    }
+
+    #[test]
+    fn c0_recombine_forward_dubeol() {
+        // 두벌식 재결합(0x1E): 가 확정 + 다음 초성 ㄴ 조합 중 → ㄴ을 종성으로 바꿔 앞 가에
+        // 결합 → 간. 0x1D(변환 없음)는 같은 상황에서 가 재확정 + ㄴ 유지(아래 대비).
+        let mut e = auto_engine();
+        e.set_surrounding_ok(true);
+        typ(&mut e, "gan"); // 가 확정, 초성 ㄴ 조합
+        let o = e.press(b'U', false); // 0x1E
+        assert_eq!(o.preedit, "간");
+        assert_eq!(o.delete_before, 1);
+    }
+
+    #[test]
+    fn c0_recombine_noop_without_surrounding() {
+        // surrounding-text 미지원이면 앞 글자 결합은 무동작(앱과 어긋나지 않도록).
+        let mut e = auto_engine();
+        // set_surrounding_ok(false) 기본값.
+        typ(&mut e, "gan"); // 가 확정, ㄴ 조합
+        let o = e.press(b'U', false); // 0x1E, 미지원
+        assert_eq!(o.preedit, "ㄴ"); // 그대로
+        assert_eq!(o.delete_before, 0);
     }
 }

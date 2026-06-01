@@ -383,56 +383,74 @@ impl IBusEngine {
             // 나머지는 현재 항목의 방식에 따라 처리.
             KeyClass::Backspace | KeyClass::Printable(_) | KeyClass::FunctionKey => {
                 let caps = state & LOCK_MASK != 0;
+                // surrounding-text 가 실제로 동작하는 앱인가(capability 비트만으론 부족해
+                // SetSurroundingText 수신까지 확인). 앞 글자 삭제/결합 특수글쇠의 전제.
+                let supports_surround =
+                    self.caps & CAP_SURROUNDING_TEXT != 0 && self.got_surrounding;
                 let i = self.current;
                 match &mut self.entries[i] {
                     // 한글 조합 항목.
-                    Mode::Hangul(core) => match class {
-                        KeyClass::Backspace => {
-                            // 조합 중이 아니고 BkspAttach 도 불가능하면 응용에 넘긴다.
-                            // (BkspAttach 는 core 가 delete_before>0 으로 신호하며, 그건
-                            //  surrounding-text 가 실제로 동작하는 앱에서만 의미 있다.
-                            //  capability 비트만으론 부족해 SetSurroundingText 수신까지 확인.)
-                            let supports_surround =
-                                self.caps & CAP_SURROUNDING_TEXT != 0 && self.got_surrounding;
-                            if core.is_empty() && !supports_surround {
-                                return Ok(false);
-                            }
-                            let out = core.backspace();
-                            // BkspAttach: 앞의 확정 글자를 응용에서 지운다(지원 시).
-                            if out.delete_before > 0 {
-                                if supports_surround {
-                                    let _ = Self::delete_surrounding_text(
-                                        &se,
-                                        -(out.delete_before as i32),
-                                        out.delete_before,
-                                    )
-                                    .await;
-                                } else {
-                                    // 못 지우면 되살리기가 무의미 → 통상 백스페이스로 폴백.
-                                    core.reset();
+                    Mode::Hangul(core) => {
+                        // 앞 글자 결합 특수글쇠(C0 낱자 재결합·앞으로 이동)는 surrounding-text
+                        // 지원 시에만 동작하도록 core 에 현재 지원 여부를 알린다.
+                        core.set_surrounding_ok(supports_surround);
+                        match class {
+                            KeyClass::Backspace => {
+                                // 조합 중이 아니고 BkspAttach 도 불가능하면 응용에 넘긴다.
+                                if core.is_empty() && !supports_surround {
                                     return Ok(false);
                                 }
+                                let out = core.backspace();
+                                // BkspAttach: 앞의 확정 글자를 응용에서 지운다(지원 시).
+                                if out.delete_before > 0 {
+                                    if supports_surround {
+                                        let _ = Self::delete_surrounding_text(
+                                            &se,
+                                            -(out.delete_before as i32),
+                                            out.delete_before,
+                                        )
+                                        .await;
+                                    } else {
+                                        // 못 지우면 되살리기가 무의미 → 통상 백스페이스로 폴백.
+                                        core.reset();
+                                        return Ok(false);
+                                    }
+                                }
+                                if !out.consumed && out.delete_before == 0 {
+                                    return Ok(false);
+                                }
+                                Self::emit(&se, &out.commit, &out.preedit).await;
+                                Ok(true)
                             }
-                            if !out.consumed && out.delete_before == 0 {
-                                return Ok(false);
+                            KeyClass::Printable(ascii) => {
+                                let out = core.press(ascii, caps);
+                                // C0 앞 글자 결합 특수글쇠: 앱의 옛 앞 글자를 지운다(지원 시).
+                                if out.delete_before > 0 {
+                                    if supports_surround {
+                                        let _ = Self::delete_surrounding_text(
+                                            &se,
+                                            -(out.delete_before as i32),
+                                            out.delete_before,
+                                        )
+                                        .await;
+                                    } else {
+                                        core.reset();
+                                        return Ok(false);
+                                    }
+                                }
+                                Self::emit(&se, &out.commit, &out.preedit).await;
+                                Ok(out.consumed)
                             }
-                            Self::emit(&se, &out.commit, &out.preedit).await;
-                            Ok(true)
-                        }
-                        KeyClass::Printable(ascii) => {
-                            let out = core.press(ascii, caps);
-                            Self::emit(&se, &out.commit, &out.preedit).await;
-                            Ok(out.consumed)
-                        }
-                        _ => {
-                            // 기능키: 조합 확정 후 통과.
-                            let commit = core.flush();
-                            if !commit.is_empty() {
-                                Self::emit(&se, &commit, "").await;
+                            _ => {
+                                // 기능키: 조합 확정 후 통과.
+                                let commit = core.flush();
+                                if !commit.is_empty() {
+                                    Self::emit(&se, &commit, "").await;
+                                }
+                                Ok(false)
                             }
-                            Ok(false)
                         }
-                    },
+                    }
                     // 로마자/직접 항목: KeyTable 로 문자만 내보내고, 매핑 없으면 패스스루.
                     Mode::Latin { keys } => {
                         if let KeyClass::Printable(ascii) = class {
