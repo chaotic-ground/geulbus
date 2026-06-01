@@ -29,7 +29,7 @@ impl Syllable {
 }
 
 /// 키 한 번 처리 결과.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct KeyOutcome {
     /// 응용프로그램에 확정 입력할 문자열(없으면 빈 문자열).
     pub commit: String,
@@ -37,6 +37,10 @@ pub struct KeyOutcome {
     pub preedit: String,
     /// 엔진이 이 키를 소비했는지. false 면 프런트엔드가 원래 키를 응용에 넘긴다.
     pub consumed: bool,
+    /// BkspAttach: 커서 앞의 이미 확정된 글자 N개를 응용에서 지워달라는 요청.
+    /// 프런트엔드가 surrounding-text(DeleteSurroundingText)를 지원하면 그만큼 지우고,
+    /// 못 지우면 무시한다(그 경우 preedit 가 비고 consumed=false 로 폴백됨).
+    pub delete_before: u32,
 }
 
 /// 한글 조합 엔진.
@@ -51,6 +55,10 @@ pub struct Engine {
     /// Bksp 연타 지속성: 백스페이스를 연달아 누르는 동안 최초로 결정된 삭제 단위를
     /// 유지한다(날개셋 "연타 시 한 번 정해진 동작 계속"). 비-Bksp 입력이 들어오면 None 으로.
     bksp_streak: Option<BkspUnit>,
+    /// BkspAttach 용: 직전에 확정(commit)한 음절들의 단위 이력. 조합이 빈 상태에서
+    /// Backspace + attach 면 마지막 음절을 되살려 재조합한다(앞의 확정 글자에 "달라붙기").
+    /// 새 글자 입력이 진행되면 무한정 쌓이지 않게 마지막 1개만 의미 있게 유지한다.
+    prev_syllables: Vec<Vec<Unit>>,
 }
 
 impl Engine {
@@ -62,6 +70,7 @@ impl Engine {
             history: Vec::new(),
             auto_state,
             bksp_streak: None,
+            prev_syllables: Vec::new(),
         }
     }
 
@@ -128,8 +137,15 @@ impl Engine {
     }
 
     /// 현재 음절을 확정 문자열로 만들고 버퍼를 비운다(이력은 건드리지 않음).
+    /// 비지 않은 음절을 확정할 때는 그 음절의 단위 이력을 BkspAttach 용으로 보존한다.
     fn commit_current(&mut self) -> String {
         let s = self.render(&self.cur);
+        if !self.cur.is_empty() && !self.history.is_empty() {
+            // 확정되는 음절의 자모 이력 스냅샷(되살리기용). 마지막 1개만 의미 있으므로
+            // 무한 증가를 막아 1칸만 유지한다.
+            self.prev_syllables.clear();
+            self.prev_syllables.push(self.history.clone());
+        }
         self.cur = Syllable::default();
         s
     }
@@ -464,6 +480,7 @@ impl Engine {
                     commit,
                     preedit: String::new(),
                     consumed: false,
+                    delete_before: 0,
                 };
             }
         };
@@ -480,6 +497,7 @@ impl Engine {
                     commit,
                     preedit: String::new(),
                     consumed: false,
+                    delete_before: 0,
                 };
             }
         };
@@ -494,6 +512,7 @@ impl Engine {
                     commit,
                     preedit: self.preedit(),
                     consumed: true,
+                    delete_before: 0,
                 }
             }
             Value::Int(n) => {
@@ -506,6 +525,7 @@ impl Engine {
                     commit,
                     preedit: String::new(),
                     consumed: true,
+                    delete_before: 0,
                 }
             }
             Value::Command(_cmd) => {
@@ -515,6 +535,7 @@ impl Engine {
                     commit,
                     preedit: self.preedit(),
                     consumed: true,
+                    delete_before: 0,
                 }
             }
         }
@@ -525,13 +546,45 @@ impl Engine {
     /// 단계씩 풀린다(날개셋 ByUnitStep 에 해당).
     pub fn backspace(&mut self) -> KeyOutcome {
         if self.cur.is_empty() {
-            // 조합 중이 아니면 응용이 직접 지우도록 넘김(앞 글자 재조합=BkspAttach 는
-            // 프런트엔드가 surrounding-text 로 처리). 연타 상태는 유지하지 않는다.
+            // 조합 중이 아님. BkspAttach 가 켜져 있고 직전에 확정한 음절이 있으면, 그
+            // 음절을 되살려(앞 글자에 "달라붙기") 거기서 한 단계 지운다. 프런트엔드가
+            // 그 확정 글자를 앱에서 지우도록 delete_before=1 을 함께 돌려준다.
+            if self.layout.bksp.attach {
+                if let Some(hist) = self.prev_syllables.pop() {
+                    if !hist.is_empty() {
+                        // 그 음절을 재구성한 뒤(달라붙기), 이번 Bksp 의 삭제 단위만큼 지운다.
+                        self.history.clear();
+                        self.cur = Syllable::default();
+                        self.auto_state = self.layout.automata_start;
+                        for u in hist {
+                            let _ = self.feed_unit(u);
+                        }
+                        // 되살린 음절에 이어서 통상 조합-중 백스페이스 한 번을 적용.
+                        let unit = self.layout.bksp.composing;
+                        self.bksp_streak = Some(unit);
+                        self.bksp_remove(unit);
+                        let hist2 = std::mem::take(&mut self.history);
+                        self.cur = Syllable::default();
+                        self.auto_state = self.layout.automata_start;
+                        for u in hist2 {
+                            let _ = self.feed_unit(u);
+                        }
+                        return KeyOutcome {
+                            commit: String::new(),
+                            preedit: self.preedit(),
+                            consumed: true,
+                            delete_before: 1, // 앱에서 앞의 확정 글자 1개 제거
+                        };
+                    }
+                }
+            }
+            // 되살릴 게 없으면 응용이 직접 지우도록 넘김.
             self.bksp_streak = None;
             return KeyOutcome {
                 commit: String::new(),
                 preedit: String::new(),
                 consumed: false,
+                delete_before: 0,
             };
         }
         // 삭제 단위 결정: 연타 중이면 최초 결정 동작 유지, 아니면 제1동작(composing)으로
@@ -557,6 +610,7 @@ impl Engine {
             commit: String::new(),
             preedit: self.preedit(),
             consumed: true,
+            delete_before: 0,
         }
     }
 
@@ -1014,5 +1068,66 @@ mod tests {
         typ(&mut e, "a"); // 다시 ㅏ → 가 (press 가 streak 해제)
         assert_eq!(e.preedit(), "가");
         assert!(e.bksp_streak.is_none());
+    }
+
+    // BkspAttach: 확정된 앞 글자를 백스페이스로 되살려 재조합. value1 에 BkspAttach 포함.
+    fn attach_engine() -> Engine {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<EditContextSetting version="0x500">
+  <EditorLayer flag="0"><FinalConvTable/></EditorLayer>
+  <InputLayer default="0" current="0">
+    <InputEntry>
+      <InputSchemeSetting object="CBasicInputScheme">
+        <KeyTable name="b" flag="0" from="33" to="126">
+          <Key at="0x67" value="H3|G_"/><Key at="0x61" value="H3|A_"/>
+          <Key at="0x6E" value="H3|N_"/><Key at="0x6D" value="H3|_N"/>
+        </KeyTable>
+      </InputSchemeSetting>
+      <GeneratorSetting object="CNgsImeEx">
+        <UnitMixTable/><VirtualUnitTable/>
+        <AutomataTable default="0">
+          <Automata state="0" value="1" default="0"/>
+          <Automata state="1" value="A||B||C ? (A||D)&amp;&amp;(B||E) ? 2 : 1 : -2" default="-1"/>
+          <Automata state="2" value="A&amp;&amp;A!=500 ? 0 : B||C||A==500 ? 2 : -2" default="0"/>
+        </AutomataTable>
+        <Extra><Bksp key="1" value1="ByUnitStep|BkspAttach" value2="BySyllable" condition1="0" condition2="0"/></Extra>
+      </GeneratorSetting>
+    </InputEntry>
+  </InputLayer>
+</EditContextSetting>"#;
+        let cfg = Config::parse(xml).unwrap();
+        Engine::new(cfg.compile(0).unwrap())
+    }
+
+    #[test]
+    fn bksp_attach_revives_prev_syllable() {
+        // 가(ㄱㅏ) 확정 후 ㄴ(다음 초성) → "가" commit, 초성 ㄴ 조합(중성 없어 preedit "ㄴ").
+        // backspace 로 ㄴ 제거 → 조합 빔, 한 번 더 backspace 면 앞의 "가"를 되살려 거기서
+        // 한 단계(ㅏ 제거) → "ㄱ", 그리고 앱의 "가"를 지우라고 delete_before=1.
+        let mut e = attach_engine();
+        let mut committed = String::new();
+        for ch in "gan".chars() {
+            committed.push_str(&e.press(ch as u8, false).commit);
+        }
+        assert_eq!(committed, "가"); // 가 확정, ㄴ 조합 중
+        assert_eq!(e.preedit(), "ㄴ"); // 초성만 → 호환 자모 ㄴ
+        let o1 = e.backspace(); // 초성 ㄴ 제거 → 빈
+        assert_eq!(o1.preedit, "");
+        assert_eq!(o1.delete_before, 0);
+        let o2 = e.backspace(); // 빈 + attach → 앞 "가" 되살려 ㅏ 제거 → ㄱ, delete_before=1
+        assert_eq!(o2.preedit, "ㄱ");
+        assert_eq!(o2.delete_before, 1);
+        assert!(o2.consumed);
+    }
+
+    #[test]
+    fn bksp_no_attach_passes_through() {
+        // attach 없는 설정(기본)에서 빈 조합 backspace 는 통과(consumed=false, delete_before=0).
+        let mut e = bksp_engine("ByUnitStep"); // attach 없음
+        let _ = e.press(b'g', false);
+        let _ = e.backspace(); // ㄱ 제거 → 빈
+        let o = e.backspace(); // 빈 + attach 없음 → 통과
+        assert!(!o.consumed);
+        assert_eq!(o.delete_before, 0);
     }
 }

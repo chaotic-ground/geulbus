@@ -115,7 +115,13 @@ pub struct IBusEngine {
     settings: Settings,
     /// 항목 직접 지정 모드에서 쓸 항목 인덱스(settings 에서 파생, 항목 수로 클램프).
     pick_idx: usize,
+    /// 클라이언트 capability 비트마스크(SetCapabilities). bit3(0x8)=surrounding-text 지원.
+    /// BkspAttach(앞 확정 글자 재조합)는 이게 켜진 앱에서만 가능하다.
+    caps: u32,
 }
+
+/// IBus capability: surrounding-text 지원 비트(IBUS_CAP_SURROUNDING_TEXT = 1<<3).
+const CAP_SURROUNDING_TEXT: u32 = 1 << 3;
 
 impl IBusEngine {
     /// 설정 파일(config.ini)을 읽어 엔진을 만든다.
@@ -174,6 +180,7 @@ impl IBusEngine {
             ime_switch,
             settings: Settings::default(), // apply_settings 가 곧 덮어쓴다
             pick_idx: 0,
+            caps: 0,
         };
         engine.apply_settings(st);
         engine
@@ -377,12 +384,34 @@ impl IBusEngine {
                     // 한글 조합 항목.
                     Mode::Hangul(core) => match class {
                         KeyClass::Backspace => {
-                            if core.is_empty() {
+                            // 조합 중이 아니고 BkspAttach 도 불가능하면 응용에 넘긴다.
+                            // (BkspAttach 는 core 가 delete_before>0 으로 신호하며, 그건
+                            //  surrounding-text 지원 앱에서만 의미 있다.)
+                            let supports_surround = self.caps & CAP_SURROUNDING_TEXT != 0;
+                            if core.is_empty() && !supports_surround {
                                 return Ok(false);
                             }
                             let out = core.backspace();
+                            // BkspAttach: 앞의 확정 글자를 응용에서 지운다(지원 시).
+                            if out.delete_before > 0 {
+                                if supports_surround {
+                                    let _ = Self::delete_surrounding_text(
+                                        &se,
+                                        -(out.delete_before as i32),
+                                        out.delete_before,
+                                    )
+                                    .await;
+                                } else {
+                                    // 못 지우면 되살리기가 무의미 → 통상 백스페이스로 폴백.
+                                    core.reset();
+                                    return Ok(false);
+                                }
+                            }
+                            if !out.consumed && out.delete_before == 0 {
+                                return Ok(false);
+                            }
                             Self::emit(&se, &out.commit, &out.preedit).await;
-                            Ok(out.consumed)
+                            Ok(true)
                         }
                         KeyClass::Printable(ascii) => {
                             let out = core.press(ascii, caps);
@@ -457,7 +486,9 @@ impl IBusEngine {
         Ok(())
     }
 
-    fn set_capabilities(&mut self, _caps: u32) {}
+    fn set_capabilities(&mut self, caps: u32) {
+        self.caps = caps;
+    }
 
     fn set_cursor_location(&mut self, _x: i32, _y: i32, _w: i32, _h: i32) {}
 
@@ -497,6 +528,15 @@ impl IBusEngine {
     /// 모드 변경 시 패널 속성(심볼)을 갱신.
     #[zbus(signal)]
     async fn update_property(se: &SignalEmitter<'_>, prop: Value<'_>) -> zbus::Result<()>;
+
+    /// 커서 앞뒤 글자를 응용에서 지운다(BkspAttach 용). offset<0 이면 커서 앞.
+    /// `(offset: i32, nchars: u32)`.
+    #[zbus(signal)]
+    async fn delete_surrounding_text(
+        se: &SignalEmitter<'_>,
+        offset: i32,
+        nchars: u32,
+    ) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
