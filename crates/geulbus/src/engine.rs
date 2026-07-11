@@ -11,6 +11,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::Value;
 use zbus::{fdo, interface};
 
+use crate::ibus_lookup_table::{make_lookup_table, PAGE_SIZE};
 use crate::ibus_property::{make_input_mode_property, make_prop_list};
 use crate::ibus_text::{make_ibus_text, make_preedit_text};
 use crate::settings::Settings;
@@ -33,6 +34,15 @@ const SPECIAL_MODS: u32 = CONTROL_MASK | MOD1_MASK | MOD4_MASK | SUPER_MASK | ME
 // 키심(keysym).
 const KEY_BACKSPACE: u32 = 0xff08;
 const KEY_HANGUL: u32 = 0xff31;
+const KEY_RETURN: u32 = 0xff0d;
+const KEY_KP_ENTER: u32 = 0xff8d;
+const KEY_ESCAPE: u32 = 0xff1b;
+const KEY_LEFT: u32 = 0xff51;
+const KEY_UP: u32 = 0xff52;
+const KEY_RIGHT: u32 = 0xff53;
+const KEY_DOWN: u32 = 0xff54;
+const KEY_PAGE_UP: u32 = 0xff55;
+const KEY_PAGE_DOWN: u32 = 0xff56;
 
 /// `GEULBUS_DEBUG_KEYS` 환경변수가 켜져 있으면 키 이벤트를 stderr 로 로깅한다.
 fn debug_keys_enabled() -> bool {
@@ -76,11 +86,104 @@ fn vk_to_keysyms(vk: &str) -> &'static [u32] {
 enum KeyClass {
     Release,
     ImeSwitch,
+    /// ShortcutTable `usage="KEYCHAR"` 단축글쇠(예: 한자 키 → `C0|0x82` 후보 변환).
+    Keychar,
     Modifier,
     ShortcutCombo,
     Backspace,
     Printable(u8),
     FunctionKey,
+}
+
+/// 후보창(변환 모드) 상태: 후보 전체와 절대 커서. 페이지는 커서에서 파생된다.
+struct CandidateState {
+    /// (확정할 문자열, 표시용 덧말 — 한자는 훈음, 특수문자는 빈 문자열).
+    items: Vec<(String, String)>,
+    /// 변환 대상이 된 조합 글자(후보창 보조 텍스트로 표시).
+    source: String,
+    /// 전체 목록 기준 커서 위치(< items.len()).
+    cursor: usize,
+}
+
+impl CandidateState {
+    fn page(&self) -> usize {
+        PAGE_SIZE as usize
+    }
+    fn page_start(&self) -> usize {
+        (self.cursor / self.page()) * self.page()
+    }
+    fn up(&mut self) {
+        self.cursor = if self.cursor == 0 {
+            self.items.len() - 1
+        } else {
+            self.cursor - 1
+        };
+    }
+    fn down(&mut self) {
+        self.cursor = if self.cursor + 1 >= self.items.len() {
+            0
+        } else {
+            self.cursor + 1
+        };
+    }
+    fn page_up(&mut self) {
+        let p = self.page();
+        self.cursor = if self.cursor >= p {
+            self.cursor - p
+        } else {
+            // 첫 페이지에서 위로: 마지막 페이지 첫 후보로 순환.
+            ((self.items.len() - 1) / p) * p
+        };
+    }
+    fn page_down(&mut self) {
+        let p = self.page();
+        self.cursor = if self.cursor + p < self.items.len() {
+            self.cursor + p
+        } else {
+            0 // 마지막 페이지에서 아래로: 첫 페이지로 순환
+        };
+    }
+}
+
+/// 후보창이 떠 있을 때 키 하나가 일으키는 동작(순수 상태 전이, 단위 테스트용).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CandAction {
+    /// 키를 소비하고 아무것도 안 함.
+    Consume,
+    /// 키를 통과시킴(수식어 등). 후보창 유지.
+    Pass,
+    /// 커서/페이지가 바뀌어 후보창을 다시 그림.
+    Redraw,
+    /// 이 문자열로 확정(조합 글자를 대체).
+    Commit(String),
+    /// 변환 취소: 후보창을 닫고 조합(preedit)은 그대로 유지.
+    Cancel,
+    /// 변환을 취소한 뒤 이 키를 일반 경로로 계속 처리(예: 다른 자모 입력).
+    Fallthrough,
+}
+
+/// 변환 대상 글자의 후보 목록. 자음이면 특수문자 표(okpyeon mssymbol,
+/// `fix_symbols` 에 따라 보정판/원본), 아니면 한자 사전(독음→한자+훈음)을 찾는다.
+/// ibus-hangul 과 같은 순서(심볼 우선)다. 없으면 빈 목록.
+fn build_candidates(ch: char, fix_symbols: bool) -> Vec<(String, String)> {
+    let symbols = if fix_symbols {
+        okpyeon::symbols_revised(ch)
+    } else {
+        okpyeon::symbols(ch)
+    };
+    if let Some(list) = symbols {
+        return list
+            .iter()
+            .map(|&s| (s.to_string(), String::new()))
+            .collect();
+    }
+    okpyeon::hanja(ch)
+        .map(|list| {
+            list.iter()
+                .map(|&(h, gloss)| (h.to_string(), gloss.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 한 입력 항목의 처리 방식.
@@ -116,6 +219,10 @@ pub struct IBusEngine {
     /// IME_SWITCH 키심 → 전환 대상 항목을 정하는 식. 식의 변수 `A` = 현재 항목 인덱스.
     /// 예: `!A` 는 0↔1 토글(0이면 1, 아니면 0). 설정 ShortcutTable 의 value 를 그대로 평가.
     ime_switch: HashMap<u32, Expr>,
+    /// KEYCHAR 키심(한자 키 등) → 입력할 날개셋문자 식(예: `C0|0x82` 후보 변환).
+    keychar: HashMap<u32, Expr>,
+    /// 후보창(한자·특수문자 변환)이 떠 있으면 그 상태.
+    candidates: Option<CandidateState>,
     /// 마지막으로 반영한 사용자 설정(config.ini). focus_in/enable 마다 다시 읽어 즉시 반영.
     settings: Settings,
     /// 항목 직접 지정 모드에서 쓸 항목 인덱스(settings 에서 파생, 항목 수로 클램프).
@@ -165,13 +272,18 @@ impl IBusEngine {
         let last = entries.len() - 1;
 
         // usage=IME_SWITCH 단축글쇠: value 식(예 "!A")을 키심에 매핑.
+        // usage=KEYCHAR 단축글쇠: 날개셋문자 식(예 VK_HANJA → "C0|0x82" 후보 변환)을 매핑.
         let mut ime_switch: HashMap<u32, Expr> = HashMap::new();
+        let mut keychar: HashMap<u32, Expr> = HashMap::new();
         for sc in &config.editor.shortcuts {
-            if sc.usage == "IME_SWITCH" {
-                if let Ok(expr) = Expr::parse(&sc.value) {
-                    for &ks in vk_to_keysyms(&sc.key) {
-                        ime_switch.insert(ks, expr.clone());
-                    }
+            let table = match sc.usage.as_str() {
+                "IME_SWITCH" => &mut ime_switch,
+                "KEYCHAR" => &mut keychar,
+                _ => continue,
+            };
+            if let Ok(expr) = Expr::parse(&sc.value) {
+                for &ks in vk_to_keysyms(&sc.key) {
+                    table.insert(ks, expr.clone());
                 }
             }
         }
@@ -186,6 +298,8 @@ impl IBusEngine {
             current: default_entry,
             default_entry,
             ime_switch,
+            keychar,
+            candidates: None,
             settings: Settings::default(), // apply_settings 가 곧 덮어쓴다
             pick_idx: 0,
             caps: 0,
@@ -329,6 +443,11 @@ impl IBusEngine {
         if self.settings.shortcuts_enabled && self.ime_switch.contains_key(&keyval) {
             return KeyClass::ImeSwitch;
         }
+        // KEYCHAR(한자 키 등)도 release/수식어보다 먼저 본다 — 한자 대용 키(오른쪽 Ctrl 등)가
+        // 수식어 키심이어도 동작하도록. 눌림/뗌 모두 이 분류로 가고, 처리부가 뗌을 소비한다.
+        if self.keychar.contains_key(&keyval) {
+            return KeyClass::Keychar;
+        }
         if state & RELEASE_MASK != 0 {
             return KeyClass::Release;
         }
@@ -349,6 +468,102 @@ impl IBusEngine {
             return KeyClass::Printable(keyval as u8); // keycode 없음 → keyval 폴백
         }
         KeyClass::FunctionKey
+    }
+
+    // ── 후보창(변환 모드) ────────────────────────────────────────────────────
+
+    /// 후보창이 떠 있을 때 키 하나의 동작을 정한다(순수 상태 전이).
+    /// 숫자 1~9 = 현재 페이지에서 선택, Enter/Space = 커서 후보 확정, Esc/Backspace = 취소,
+    /// 방향키/PgUp/PgDn/한자 키 = 이동. 그 외 글쇠는 취소 후 일반 경로로 계속(Fallthrough).
+    fn candidate_action(&mut self, class: KeyClass, keyval: u32, release: bool) -> CandAction {
+        let st = self.candidates.as_mut().expect("candidate mode");
+        if release {
+            // 우리가 눌림을 소비한 키들의 뗌: 조용히 소비(응용에 홀로 된 뗌을 보내지 않는다).
+            return CandAction::Consume;
+        }
+        match class {
+            KeyClass::Modifier => CandAction::Pass,
+            // 한자 키 재타: 다음 페이지(MS IME 동작).
+            KeyClass::Keychar => {
+                st.page_down();
+                CandAction::Redraw
+            }
+            KeyClass::Printable(d @ b'1'..=b'9') => {
+                let idx = st.page_start() + (d - b'1') as usize;
+                match st.items.get(idx) {
+                    Some(item) => CandAction::Commit(item.0.clone()),
+                    None => CandAction::Consume, // 페이지 끝을 넘는 번호: 무시
+                }
+            }
+            KeyClass::Printable(b' ') => CandAction::Commit(st.items[st.cursor].0.clone()),
+            KeyClass::Backspace => CandAction::Cancel,
+            KeyClass::FunctionKey => match keyval {
+                KEY_RETURN | KEY_KP_ENTER => CandAction::Commit(st.items[st.cursor].0.clone()),
+                KEY_ESCAPE => CandAction::Cancel,
+                KEY_UP => {
+                    st.up();
+                    CandAction::Redraw
+                }
+                KEY_DOWN => {
+                    st.down();
+                    CandAction::Redraw
+                }
+                KEY_PAGE_UP | KEY_LEFT => {
+                    st.page_up();
+                    CandAction::Redraw
+                }
+                KEY_PAGE_DOWN | KEY_RIGHT => {
+                    st.page_down();
+                    CandAction::Redraw
+                }
+                _ => CandAction::Fallthrough,
+            },
+            // 다른 글쇠 입력·IME 전환·단축키: 변환을 취소하고 그 키를 정상 처리.
+            _ => CandAction::Fallthrough,
+        }
+    }
+
+    /// 후보창과 보조 텍스트(변환 대상 글자)를 (다시) 그린다.
+    async fn show_candidates(&self, se: &SignalEmitter<'_>) {
+        let Some(st) = &self.candidates else { return };
+        let display: Vec<String> = st
+            .items
+            .iter()
+            .map(|(text, gloss)| {
+                if gloss.is_empty() {
+                    text.clone()
+                } else {
+                    format!("{text} {gloss}") // 한자 후보는 훈음을 함께 표시
+                }
+            })
+            .collect();
+        let _ = Self::update_auxiliary_text(se, make_ibus_text(st.source.clone()), true).await;
+        let _ = Self::update_lookup_table(se, make_lookup_table(&display, st.cursor as u32), true)
+            .await;
+    }
+
+    /// 후보창과 보조 텍스트를 내린다.
+    async fn hide_candidates(se: &SignalEmitter<'_>) {
+        let _ = Self::hide_lookup_table(se).await;
+        let _ = Self::hide_auxiliary_text(se).await;
+    }
+
+    /// 후보 `idx` 로 확정: 조합(원본 글자)을 버리고 후보 문자열을 확정 입력한다.
+    async fn commit_candidate(&mut self, se: &SignalEmitter<'_>, idx: usize) {
+        let Some(text) = self
+            .candidates
+            .as_ref()
+            .and_then(|st| st.items.get(idx))
+            .map(|item| item.0.clone())
+        else {
+            return;
+        };
+        if let Mode::Hangul(core) = &mut self.entries[self.current] {
+            core.reset();
+        }
+        self.candidates = None;
+        Self::hide_candidates(se).await;
+        Self::emit(se, &text, "").await;
     }
 }
 
@@ -373,6 +588,36 @@ impl IBusEngine {
         }
         let class = self.classify(keyval, keycode, state);
         let release = state & RELEASE_MASK != 0;
+        // 후보창(변환 모드)이 떠 있으면 키를 후보 탐색/선택으로 먼저 라우팅한다.
+        if self.candidates.is_some() {
+            match self.candidate_action(class, keyval, release) {
+                CandAction::Pass => return Ok(false),
+                CandAction::Consume => return Ok(true),
+                CandAction::Redraw => {
+                    self.show_candidates(&se).await;
+                    return Ok(true);
+                }
+                CandAction::Commit(text) => {
+                    if let Mode::Hangul(core) = &mut self.entries[self.current] {
+                        core.reset(); // 조합(원본 글자)을 버리고 후보로 대체
+                    }
+                    self.candidates = None;
+                    Self::hide_candidates(&se).await;
+                    Self::emit(&se, &text, "").await;
+                    return Ok(true);
+                }
+                CandAction::Cancel => {
+                    self.candidates = None;
+                    Self::hide_candidates(&se).await;
+                    return Ok(true); // 조합(preedit)은 그대로 남아 이어서 편집
+                }
+                CandAction::Fallthrough => {
+                    self.candidates = None;
+                    Self::hide_candidates(&se).await;
+                    // 취소 후 아래 일반 분기로 계속(예: 다른 자모 입력, IME 전환).
+                }
+            }
+        }
         match class {
             // IME_SWITCH(한/영·CapsLock 등): 눌림/뗌 모두 소비, 눌림에서 전환식을 평가.
             // value 식(예 "!A")을 A=현재 항목으로 평가해 대상 항목을 얻는다. `!A` → 0이면 1, 아니면 0.
@@ -386,6 +631,63 @@ impl IBusEngine {
                     }
                 }
                 Ok(true)
+            }
+            // KEYCHAR(한자 키 등): 식을 평가해 날개셋문자를 실행한다.
+            // C0|0x82~0x85(후보 변환)면 조합 글자의 후보(특수문자/한자)창을 연다.
+            KeyClass::Keychar => {
+                if release {
+                    return Ok(true); // 눌림을 소비했으니 뗌도 소비
+                }
+                let Some(val) = self
+                    .keychar
+                    .get(&keyval)
+                    .and_then(|expr| expr.eval(&Ctx::default()).ok())
+                else {
+                    return Ok(false);
+                };
+                let fix_symbols = self.settings.fix_symbol_table;
+                let i = self.current;
+                // 로마자/직접 항목: 조합이 없어 변환 대상이 없으니 통과.
+                let Mode::Hangul(core) = &mut self.entries[i] else {
+                    return Ok(false);
+                };
+                match val {
+                    ExprValue::Command(cmd) => {
+                        let out = core.command(cmd);
+                        if let Some(req) = out.convert {
+                            // 후보 변환 요청: preedit 한 글자로 후보를 찾는다.
+                            // 0x82(기본 한자 변환)만 내장 사전이 있다. 0x83~0x85(사용자
+                            // 후보 2~4)는 데이터 계층 미구현 → 무동작(키만 소비).
+                            let preedit = core.preedit();
+                            let mut chars = preedit.chars();
+                            if let (Some(ch), None, 0x82) = (chars.next(), chars.next(), req) {
+                                let items = build_candidates(ch, fix_symbols);
+                                if !items.is_empty() {
+                                    self.candidates = Some(CandidateState {
+                                        items,
+                                        source: preedit,
+                                        cursor: 0,
+                                    });
+                                    self.show_candidates(&se).await;
+                                }
+                            }
+                            return Ok(true);
+                        }
+                        // 변환이 아닌 C0 명령(KEYCHAR 로 배당한 편집 특수글쇠 등).
+                        Self::emit(&se, &out.commit, &out.preedit).await;
+                        Ok(out.consumed)
+                    }
+                    // 날개셋문자가 일반 문자면: 조합 확정 후 그 문자를 입력.
+                    ExprValue::Int(n) => {
+                        let mut commit = core.flush();
+                        if let Some(c) = u32::try_from(n).ok().and_then(char::from_u32) {
+                            commit.push(c);
+                        }
+                        Self::emit(&se, &commit, "").await;
+                        Ok(true)
+                    }
+                    ExprValue::Unit(_) => Ok(false),
+                }
             }
             // 뗌·수식어 키 자체: 조합에 영향 없이 통과.
             KeyClass::Release | KeyClass::Modifier => Ok(false),
@@ -559,11 +861,43 @@ impl IBusEngine {
         }
     }
 
-    fn page_up(&mut self) {}
-    fn page_down(&mut self) {}
-    fn cursor_up(&mut self) {}
-    fn cursor_down(&mut self) {}
-    fn candidate_clicked(&mut self, _index: u32, _button: u32, _state: u32) {}
+    // 패널(마우스 휠·버튼)에서 오는 후보창 탐색. 키보드와 같은 상태 머신을 쓴다.
+    async fn page_up(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) {
+        if let Some(st) = &mut self.candidates {
+            st.page_up();
+            self.show_candidates(&se).await;
+        }
+    }
+    async fn page_down(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) {
+        if let Some(st) = &mut self.candidates {
+            st.page_down();
+            self.show_candidates(&se).await;
+        }
+    }
+    async fn cursor_up(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) {
+        if let Some(st) = &mut self.candidates {
+            st.up();
+            self.show_candidates(&se).await;
+        }
+    }
+    async fn cursor_down(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) {
+        if let Some(st) = &mut self.candidates {
+            st.down();
+            self.show_candidates(&se).await;
+        }
+    }
+    /// 패널에서 후보를 클릭. `index` 는 현재 페이지 안 위치(0부터).
+    async fn candidate_clicked(
+        &mut self,
+        #[zbus(signal_emitter)] se: SignalEmitter<'_>,
+        index: u32,
+        _button: u32,
+        _state: u32,
+    ) {
+        let Some(st) = &self.candidates else { return };
+        let idx = st.page_start() + index as usize;
+        self.commit_candidate(&se, idx).await;
+    }
 
     // ── 신호(engine → daemon) ────────────────────────────────────────────────
 
@@ -599,6 +933,30 @@ impl IBusEngine {
     /// 응용에 surrounding-text 를 보내달라고 요청. 응답은 SetSurroundingText 메서드로 온다.
     #[zbus(signal)]
     async fn require_surrounding_text(se: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    /// 후보창 갱신. `table` 은 IBusLookupTable(v), `visible` 이 true 면 패널이 띄운다.
+    #[zbus(signal)]
+    async fn update_lookup_table(
+        se: &SignalEmitter<'_>,
+        table: Value<'_>,
+        visible: bool,
+    ) -> zbus::Result<()>;
+
+    /// 후보창 닫기.
+    #[zbus(signal)]
+    async fn hide_lookup_table(se: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    /// 후보창 위 보조 텍스트(변환 대상 글자) 갱신. `text` 는 IBusText(v).
+    #[zbus(signal)]
+    async fn update_auxiliary_text(
+        se: &SignalEmitter<'_>,
+        text: Value<'_>,
+        visible: bool,
+    ) -> zbus::Result<()>;
+
+    /// 보조 텍스트 닫기.
+    #[zbus(signal)]
+    async fn hide_auxiliary_text(se: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
@@ -662,6 +1020,7 @@ mod tests {
                 pick_entry: true,
                 entry: 0,
                 shortcuts_enabled: true,
+                fix_symbol_table: true,
             },
         );
         assert_eq!(e.mode_symbol(), "가");
@@ -693,6 +1052,7 @@ mod tests {
             pick_entry: true,
             entry: 0,
             shortcuts_enabled: true,
+            fix_symbol_table: true,
         };
         let e = IBusEngine::with_settings(&cfg, st);
         assert!(e.settings.pick_entry);
@@ -709,6 +1069,7 @@ mod tests {
                 pick_entry: true,
                 entry: 0,
                 shortcuts_enabled: true,
+                fix_symbol_table: true,
             },
         );
         assert_eq!(e.switch_target(0xff31), e.current);
@@ -725,6 +1086,7 @@ mod tests {
             pick_entry: true,
             entry: 0,
             shortcuts_enabled: true,
+            fix_symbol_table: true,
         });
         assert_ne!(before.pick_entry, e.settings.pick_entry);
         assert!(e.settings.pick_entry);
@@ -843,5 +1205,118 @@ mod tests {
     #[test]
     fn backspace_classified() {
         assert_eq!(engine().classify(KEY_BACKSPACE, 14, 0), KeyClass::Backspace);
+    }
+
+    // ── 한자 키 · 후보창(변환 모드) ─────────────────────────────────────────
+
+    #[test]
+    fn hanja_key_is_keychar() {
+        let e = engine();
+        // MINI 의 <Shortcut key="VK_HANJA" usage="KEYCHAR" value="C0|0x82"/> 가 컴파일된다.
+        assert_eq!(e.classify(0xff34, 0, 0), KeyClass::Keychar);
+        // 뗌도 같은 분류로 와서 처리부가 소비한다(응용에 홀로 된 뗌을 보내지 않도록).
+        assert_eq!(e.classify(0xff34, 0, RELEASE_MASK), KeyClass::Keychar);
+    }
+
+    #[test]
+    fn keychar_expr_evaluates_to_convert_command() {
+        use geulbus_core::expr::{Ctx, Value as EV};
+        let e = engine();
+        let expr = e.keychar.get(&0xff34).expect("hanja keychar expr");
+        assert_eq!(expr.eval(&Ctx::default()).unwrap(), EV::Command(0x82));
+    }
+
+    #[test]
+    fn build_candidates_symbols_and_hanja() {
+        // 자음 → 특수문자 표. ㅁ 에 ※ 가 있고, 보정판(fix=true)은 끝에 ㉾ 가 추가된다.
+        let fixed = build_candidates('ㅁ', true);
+        assert!(fixed.iter().any(|(t, _)| t == "※"));
+        assert_eq!(fixed.last().unwrap().0, "㉾");
+        let orig = build_candidates('ㅁ', false);
+        assert_eq!(orig.len() + 1, fixed.len());
+        // ㄹ 4번째: 원본은 전각Ｆ(옛 MS IME 결함), 보정판은 °(날개셋 동작).
+        assert_eq!(build_candidates('ㄹ', false)[3].0, "Ｆ");
+        assert_eq!(build_candidates('ㄹ', true)[3].0, "°");
+        // 음절 → 한자 사전(훈음 포함, 상용 한자 우선).
+        let hak = build_candidates('학', true);
+        assert_eq!(hak[0], ("學".to_string(), "배울 학".to_string()));
+        // ㅉ(MS IME 도 미배당)과 비한글은 후보 없음 → 후보창을 열지 않는다.
+        assert!(build_candidates('ㅉ', true).is_empty());
+        assert!(build_candidates('A', true).is_empty());
+    }
+
+    #[test]
+    fn candidate_state_navigation_wraps() {
+        let mut st = CandidateState {
+            items: (0..20).map(|i| (i.to_string(), String::new())).collect(),
+            source: "ㅁ".into(),
+            cursor: 0,
+        };
+        st.up();
+        assert_eq!(st.cursor, 19); // 처음에서 위로: 끝으로 순환
+        st.down();
+        assert_eq!(st.cursor, 0);
+        st.page_down();
+        assert_eq!(st.cursor, 9);
+        st.page_down();
+        assert_eq!(st.cursor, 18);
+        st.page_down();
+        assert_eq!(st.cursor, 0); // 마지막 페이지에서 아래로: 첫 페이지로 순환
+        st.page_up();
+        assert_eq!(st.cursor, 18); // 첫 페이지에서 위로: 마지막 페이지 첫 후보
+        assert_eq!(st.page_start(), 18);
+    }
+
+    #[test]
+    fn candidate_action_select_cancel_fallthrough() {
+        let mut e = engine();
+        e.candidates = Some(CandidateState {
+            items: vec![
+                ("※".to_string(), String::new()),
+                ("★".to_string(), String::new()),
+            ],
+            source: "ㅁ".to_string(),
+            cursor: 0,
+        });
+        // 숫자 2 → 현재 페이지 2번째 후보 확정.
+        assert_eq!(
+            e.candidate_action(KeyClass::Printable(b'2'), 0, false),
+            CandAction::Commit("★".to_string())
+        );
+        // Enter → 커서 후보 확정.
+        assert_eq!(
+            e.candidate_action(KeyClass::FunctionKey, KEY_RETURN, false),
+            CandAction::Commit("※".to_string())
+        );
+        // Esc → 취소(조합 유지).
+        assert_eq!(
+            e.candidate_action(KeyClass::FunctionKey, KEY_ESCAPE, false),
+            CandAction::Cancel
+        );
+        // 페이지 밖 번호 → 소비만(무동작).
+        assert_eq!(
+            e.candidate_action(KeyClass::Printable(b'9'), 0, false),
+            CandAction::Consume
+        );
+        // 다른 글쇠 입력 → 취소 후 일반 경로로 계속.
+        assert_eq!(
+            e.candidate_action(KeyClass::Printable(b'k'), 0, false),
+            CandAction::Fallthrough
+        );
+        // 뗌은 조용히 소비.
+        assert_eq!(
+            e.candidate_action(KeyClass::Release, 0, true),
+            CandAction::Consume
+        );
+        // 한자 키 재타 → 페이지 이동(다시 그림).
+        assert_eq!(
+            e.candidate_action(KeyClass::Keychar, 0xff34, false),
+            CandAction::Redraw
+        );
+        // 수식어는 통과(후보창 유지).
+        assert_eq!(
+            e.candidate_action(KeyClass::Modifier, 0xffe1, false),
+            CandAction::Pass
+        );
     }
 }

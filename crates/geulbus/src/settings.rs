@@ -12,6 +12,10 @@
 //! entry = 0
 //! # IME_SWITCH 단축글쇠(한/영 키 등)로 입력 항목을 전환할지. 끄면 그 키를 통과시킨다.
 //! shortcuts_enabled = true
+//! # 자음+한자 특수문자 표의 알려진 결함 2건을 보정할지(기본 켬).
+//! # 켬: ㄹ 4번째가 °(도 기호, 날개셋 동작), ㅁ 끝에 ㉾(최신 Windows 동작).
+//! # 끔: 옛 MS IME 원본 그대로(ㄹ 4번째가 전각Ｆ 중복, ㉾ 없음).
+//! fix_symbol_table = true
 //! ```
 
 use std::path::PathBuf;
@@ -31,6 +35,10 @@ pub struct Settings {
     /// IME 까지 오지 않으므로, 애초에 단축글쇠로 쓸 수 없다(직접 바인딩해야 함).
     /// (`pick_entry` 가 켜지면 전환 자체가 없으므로 이 값은 무의미해진다.)
     pub shortcuts_enabled: bool,
+    /// 자음+한자 특수문자 표(okpyeon mssymbol)의 알려진 결함 2건을 보정할지. 기본 켬.
+    /// 켬: ㄹ 4번째 후보가 °(도 기호, 날개셋 동작), ㅁ 마지막에 ㉾(최신 Windows 동작).
+    /// 끔: 옛 MS IME 원본 그대로(ㄹ 4번째가 ㅍ 표와 중복인 전각Ｆ, ㉾ 없음).
+    pub fix_symbol_table: bool,
 }
 
 impl Default for Settings {
@@ -39,6 +47,7 @@ impl Default for Settings {
             pick_entry: false,
             entry: 0,
             shortcuts_enabled: true,
+            fix_symbol_table: true,
         }
     }
 }
@@ -91,6 +100,11 @@ impl Settings {
                         s.shortcuts_enabled = b;
                     }
                 }
+                "fix_symbol_table" => {
+                    if let Some(b) = parse_bool(v) {
+                        s.fix_symbol_table = b;
+                    }
+                }
                 _ => {}
             }
         }
@@ -141,6 +155,16 @@ mod tests {
         assert!(Settings::parse("pick_entry=yes").pick_entry);
         assert!(!Settings::parse("pick_entry=off").pick_entry);
         assert!(!Settings::parse("pick_entry=garbage").pick_entry);
+    }
+
+    #[test]
+    fn fix_symbol_table_default_on_and_parses() {
+        // 기본은 보정 켬(날개셋·최신 Windows 동작).
+        assert!(Settings::default().fix_symbol_table);
+        assert!(Settings::parse("").fix_symbol_table);
+        // 끄면 옛 MS IME 원본 표.
+        assert!(!Settings::parse("fix_symbol_table = false").fix_symbol_table);
+        assert!(Settings::parse("fix_symbol_table = on").fix_symbol_table);
     }
 
     #[test]

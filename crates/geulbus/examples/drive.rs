@@ -86,6 +86,40 @@ fn prop_symbol(prop: &Value<'_>) -> String {
     String::new()
 }
 
+/// IBusLookupTable variant 를 "커서/전체 [현재 페이지 후보들]" 한 줄로 요약한다.
+/// 필드: [2]=page_size(u), [3]=cursor(u), [7]=candidates(av of IBusText).
+fn lookup_summary(v: &Value<'_>) -> String {
+    let Value::Structure(s) = v else {
+        return String::new();
+    };
+    let f = s.fields();
+    let (Some(Value::U32(page)), Some(Value::U32(cursor)), Some(Value::Array(cands))) =
+        (f.get(2), f.get(3), f.get(7))
+    else {
+        return String::new();
+    };
+    let texts: Vec<String> = cands
+        .iter()
+        .map(|c| ibus_text_string(unwrap_variant(c)))
+        .collect();
+    let p = (*page as usize).max(1);
+    let cur = *cursor as usize;
+    let start = (cur / p) * p;
+    let end = (start + p).min(texts.len());
+    let items: Vec<String> = texts[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            if start + i == cur {
+                format!("[{}]{t}", i + 1)
+            } else {
+                format!("{}.{t}", i + 1)
+            }
+        })
+        .collect();
+    format!("{}/{} {}", cur + 1, texts.len(), items.join(" "))
+}
+
 /// 16/10진 정수 파싱.
 fn parse_int(s: &str) -> Option<u32> {
     s.strip_prefix("0x")
@@ -152,6 +186,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut regprop = engine.receive_signal("RegisterProperties").await?;
     let mut updprop = engine.receive_signal("UpdateProperty").await?;
     let mut fwd = engine.receive_signal("ForwardKeyEvent").await?;
+    let mut lookup = engine.receive_signal("UpdateLookupTable").await?;
+    let mut hide_lookup = engine.receive_signal("HideLookupTable").await?;
+    let mut aux = engine.receive_signal("UpdateAuxiliaryText").await?;
     let commit_log = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let clog = commit_log.clone();
     tokio::spawn(async move {
@@ -183,6 +220,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Ok((kv, _kc, st)) = body.deserialize::<(u32, u32, u32)>() {
                         let ch = char::from_u32(kv).unwrap_or('?');
                         println!("  ← ForwardKeyEvent keyval=0x{kv:02x} ({ch:?}) state=0x{st:x}");
+                    }
+                }
+                Some(msg) = lookup.next() => {
+                    let body = msg.body();
+                    if let Ok((v, vis)) = body.deserialize::<(Value, bool)>() {
+                        println!("  ← UpdateLookupTable (visible={vis}) {}", lookup_summary(&v));
+                    }
+                }
+                Some(msg) = hide_lookup.next() => {
+                    let _ = msg;
+                    println!("  ← HideLookupTable");
+                }
+                Some(msg) = aux.next() => {
+                    let body = msg.body();
+                    if let Ok((v, vis)) = body.deserialize::<(Value, bool)>() {
+                        println!("  ← UpdateAuxiliaryText {:?} (visible={vis})", ibus_text_string(&v));
                     }
                 }
                 Some(msg) = regprop.next() => {

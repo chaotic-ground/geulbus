@@ -190,3 +190,17 @@ fn decode_test_vectors() {
         fails.join("\n")
     );
 }
+
+/// 스키마 픽스처(example.set.xml)는 문서용 예제이자 geulbus e2e 구동용이다.
+/// 스키마 검증만 받고 컴파일은 안 거치면 표기 오류가 잠복하므로 여기서 컴파일까지 보증한다.
+#[test]
+fn fixture_example_set_compiles() {
+    let xml = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/example.set.xml"
+    ))
+    .expect("fixture 읽기");
+    let cfg = Config::parse(&xml).expect("fixture 파싱");
+    let layout = cfg.compile(0).expect("fixture 컴파일");
+    assert!(layout.keys.values().any(|e| e.contains_unit()));
+}

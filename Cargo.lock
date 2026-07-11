@@ -237,6 +237,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "geulbus-core",
+ "okpyeon",
  "tokio",
  "zbus",
 ]
@@ -368,6 +369,12 @@ dependencies = [
  "wasi",
  "windows-sys",
 ]
+
+[[package]]
+name = "okpyeon"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6489e0cecde3839343be174c51891b85e292463fa08c752a2c679320a3352b5"
 
 [[package]]
 name = "once_cell"

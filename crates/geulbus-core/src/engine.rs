@@ -40,6 +40,10 @@ pub struct KeyOutcome {
     /// 프런트엔드가 surrounding-text(DeleteSurroundingText)를 지원하면 그만큼 지우고,
     /// 못 지우면 무시한다(그 경우 preedit 가 비고 consumed=false 로 폴백됨).
     pub delete_before: u32,
+    /// 후보(한자) 변환 특수글쇠(C0 0x82~0x85)가 눌렸다는 요청(하위 코드 그대로).
+    /// 사전 조회와 후보창 UI 는 프런트엔드 몫이다. 조합 상태는 그대로 유지되므로
+    /// 프런트엔드는 `preedit` 의 글자로 후보를 찾고, 확정 시 `reset()` 후 확정하면 된다.
+    pub convert: Option<u32>,
 }
 
 /// 한글 조합 엔진.
@@ -545,6 +549,7 @@ impl Engine {
                 if commit.is_empty() {
                     // 조합 중이 아니면 우리가 확정할 것이 없으니 원래 키를 응용에 넘긴다.
                     return KeyOutcome {
+                        convert: None,
                         commit,
                         preedit: String::new(),
                         consumed: false,
@@ -559,6 +564,7 @@ impl Engine {
                     commit.push(ch);
                 }
                 return KeyOutcome {
+                    convert: None,
                     commit,
                     preedit: String::new(),
                     consumed: true,
@@ -576,6 +582,7 @@ impl Engine {
             Err(_) => {
                 let commit = self.commit_and_clear();
                 return KeyOutcome {
+                    convert: None,
                     commit,
                     preedit: String::new(),
                     consumed: false,
@@ -586,11 +593,20 @@ impl Engine {
         self.dispatch(val)
     }
 
+    /// C0 특수글쇠를 KeyTable 밖에서 직접 실행한다. 프런트엔드가 ShortcutTable 의
+    /// `usage="KEYCHAR"` 단축글쇠(예: VK_HANJA → `C0|0x82`)를 평가해 얻은 명령을
+    /// 넘길 때 쓴다. `press` 와 같은 전처리(백스페이스 연타 지속성 종료)를 거친다.
+    pub fn command(&mut self, cmd: u32) -> KeyOutcome {
+        self.bksp_streak = None;
+        self.dispatch_command(cmd)
+    }
+
     fn dispatch(&mut self, val: Value) -> KeyOutcome {
         match val {
             Value::Unit(u) => {
                 let commit = self.feed_unit(u);
                 KeyOutcome {
+                    convert: None,
                     commit,
                     preedit: self.preedit(),
                     consumed: true,
@@ -604,6 +620,7 @@ impl Engine {
                     commit.push(ch);
                 }
                 KeyOutcome {
+                    convert: None,
                     commit,
                     preedit: String::new(),
                     consumed: true,
@@ -646,6 +663,7 @@ impl Engine {
                             let _ = self.feed_unit(u);
                         }
                         return KeyOutcome {
+                            convert: None,
                             commit: String::new(),
                             preedit: self.preedit(),
                             consumed: true,
@@ -657,6 +675,7 @@ impl Engine {
             // 되살릴 게 없으면 응용이 직접 지우도록 넘김.
             self.bksp_streak = None;
             return KeyOutcome {
+                convert: None,
                 commit: String::new(),
                 preedit: String::new(),
                 consumed: false,
@@ -676,6 +695,7 @@ impl Engine {
         self.bksp_remove(unit);
         self.replay_history();
         KeyOutcome {
+            convert: None,
             commit: String::new(),
             preedit: self.preedit(),
             consumed: true,
@@ -751,6 +771,7 @@ impl Engine {
     /// 조합 중 편집 명령의 공통 결과(확정 없음, 현재 preedit, 소비).
     fn composing_outcome(&self) -> KeyOutcome {
         KeyOutcome {
+            convert: None,
             commit: String::new(),
             preedit: self.preedit(),
             consumed: true,
@@ -819,6 +840,7 @@ impl Engine {
             let _ = self.feed_unit(u);
         }
         KeyOutcome {
+            convert: None,
             commit,
             preedit: self.preedit(),
             consumed: true,
@@ -1002,6 +1024,7 @@ impl Engine {
         }
         self.replaying = false;
         KeyOutcome {
+            convert: None,
             commit: String::new(),
             preedit: self.preedit(),
             consumed: true,
@@ -1072,12 +1095,30 @@ impl Engine {
             // 0x88~0x8B: Backspace 1~4(0x8A/0x8B 는 항상 가로챔).
             0x88 | 0x89 => self.cmd_backspace(false),
             0x8A | 0x8B => self.cmd_backspace(true),
-            // 미구현/미지원(cursor 이동·Del·뒤 글자 재결합 0x1F/0x20·한자 후보 변환 등):
+            // 0x82~0x85: 후보(한자) 변환 1~4. 사전과 후보창은 프런트엔드 몫이므로
+            // 조합 상태는 건드리지 않고 변환 요청만 올린다. 조합 중이 아니면
+            // 변환할 대상이 없으니 소비하지 않고 통과시킨다(날개셋·MS IME 동일).
+            0x82..=0x85 => {
+                if self.cur.is_empty() {
+                    return KeyOutcome {
+                        consumed: false,
+                        ..Default::default()
+                    };
+                }
+                KeyOutcome {
+                    preedit: self.preedit(),
+                    consumed: true,
+                    convert: Some(cmd),
+                    ..Default::default()
+                }
+            }
+            // 미구현/미지원(cursor 이동·Del·뒤 글자 재결합 0x1F/0x20 등):
             // 현재 음절만 확정. 0x1F/0x20 은 cursor 뒤 글자 삭제(forward delete)가 IBus/
             // Wayland 에서 불가해 보류.
             _ => {
                 let commit = self.commit_and_clear();
                 KeyOutcome {
+                    convert: None,
                     commit,
                     preedit: self.preedit(),
                     consumed: true,
@@ -1919,6 +1960,35 @@ mod tests {
         let o = e.press(b'S', false); // C0|0x23 직전 두 글쇠 교환
         assert!(o.consumed);
         assert_eq!(e.cur.jung, Some(0x1169)); // ㅗ (재결합 안 됨)
+    }
+
+    // ── 후보(한자) 변환 특수글쇠 ─────────────────────────────────────────────
+
+    #[test]
+    fn c0_convert_requests_conversion_keeping_state() {
+        // 0x82(한자 변환): 조합 상태를 유지한 채 변환 요청만 올린다. 확정 없음.
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.command(0x82);
+        assert!(o.consumed);
+        assert_eq!(o.convert, Some(0x82));
+        assert_eq!(o.commit, "");
+        assert_eq!(o.preedit, "간"); // 조합 유지 → 취소(Esc) 시 그대로 이어서 조합
+        assert_eq!(e.preedit(), "간");
+    }
+
+    #[test]
+    fn c0_convert_empty_passes_through() {
+        // 조합 중이 아니면 변환할 대상이 없다: 소비하지 않고 키를 응용에 넘긴다.
+        let mut e = auto_engine();
+        let o = e.command(0x82);
+        assert!(!o.consumed);
+        assert_eq!(o.convert, None);
+        // 0x83~0x85(후보 2~4)도 같은 규약으로 요청을 올린다.
+        typ(&mut e, "g");
+        let o2 = e.command(0x85);
+        assert_eq!(o2.convert, Some(0x85));
+        assert!(o2.consumed);
     }
 
     // ── Tier B/C: Backspace 변형 · 앞 글자 결합(surrounding-text 필요) ──────────

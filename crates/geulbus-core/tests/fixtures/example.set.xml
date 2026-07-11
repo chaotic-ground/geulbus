@@ -17,17 +17,17 @@
       <InputSchemeSetting flag="0" object="CBasicInputScheme">
         <KeyTable name="example" flag="0" from="33" to="126">
           <Key at="0x6B" value="H3|G_"/>
-          <Key at="0x66" value="H3|_A"/>
+          <Key at="0x66" value="H3|A_"/>
           <Key at="0x21" value="T ? H3|_GG : 0x21"/>
         </KeyTable>
       </InputSchemeSetting>
       <GeneratorSetting flag="0" object="CNgsIme">
         <UnitMixTable predefined="SEBEOLSIK">
-          <UnitMix unit="CHO" a="H3|G_" b="H3|G_" to="H3|GG"/>
-          <UnitMix unit="JUNG" a="H3|_O" b="H3|_A" to="H3|_WA"/>
+          <UnitMix unit="CHO" a="G_" b="G_" to="GG"/>
+          <UnitMix unit="JUNG" a="O_" b="A_" to="WA"/>
         </UnitMixTable>
         <VirtualUnitTable>
-          <VirtualUnit unit="JUNG" from="128" to="H3|_O"/>
+          <VirtualUnit unit="JUNG" from="128" to="O_"/>
         </VirtualUnitTable>
         <UnitAbbrTable/>
         <AutomataTable default="0" predefined="SEQUENTIAL">
