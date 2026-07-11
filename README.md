@@ -152,6 +152,11 @@ GNOME 입력 소스 목록에서 geulbus 옆 **톱니바퀴(설정)** 를 누르
 - 설정창의 **특수문자 표 결함 보정**(기본 켬): 켜면 ㄹ 4번째가 `°`(날개셋 방식)이고
   ㅁ 끝에 `㉾`(최신 Windows 방식), 끄면 옛 MS IME 원본 표 그대로
   (`config.ini` 의 `fix_symbol_table`).
+- **전용 한자 키가 없는 키보드**(대부분의 노트북, "한/영" 각인 키가 물리적으로는
+  오른쪽 Alt): `scripts/setup-hanja-key.sh` 로 오른쪽 Alt 를 한자 키로 만들 수
+  있습니다(sudo 불필요, `--revert` 로 되돌리기). 표준 XKB 옵션 `korean:ralt_hanja`
+  는 그룹 1에만 적용돼 dvorak-mac 등과 짝지어진 소스에서 먹지 않으므로, 이
+  스크립트는 사용자 XKB rules 의 `:all` 지정자로 모든 그룹에 적용합니다.
 - 사용자 정의 후보 변환 2~4(`C0|0x83`~`0x85`)는 아직 지원하지 않습니다
   ([#1](https://github.com/chaotic-ground/geulbus/issues/1)). 단어 단위 변환은
   계획에 없습니다(날개셋도 Windows MS IME 사전에 위임하는 기능).
