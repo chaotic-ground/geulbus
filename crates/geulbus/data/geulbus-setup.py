@@ -64,12 +64,18 @@ def xml_path():
     return candidates[0]
 
 
+# 이 설정창이 관리하는 키. 저장 시 이 밖의 키는 원본 그대로 보존한다
+# (엔진이 새 키를 먼저 알게 되어도 설정창 저장이 그 키를 지우지 않도록).
+MANAGED_KEYS = ("pick_entry", "entry", "shortcuts_enabled", "fix_symbol_table")
+
+
 def load_ini():
     """key=value 설정을 dict 로. 없으면 기본값."""
     cfg = {
         "pick_entry": "false",
         "entry": "0",
         "shortcuts_enabled": "true",
+        "fix_symbol_table": "true",
     }
     try:
         with open(ini_path(), encoding="utf-8") as f:
@@ -84,7 +90,7 @@ def load_ini():
     return cfg
 
 
-def save_ini(pick, entry_idx, shortcuts):
+def save_ini(pick, entry_idx, shortcuts, fix_symbols):
     os.makedirs(config_dir(), exist_ok=True)
     body = (
         "# geulbus 설정 (geulbus-setup 가 생성). key=value 형식.\n"
@@ -96,7 +102,15 @@ def save_ini(pick, entry_idx, shortcuts):
         f"entry = {entry_idx}\n"
         "# 단축글쇠(한/영 키 등)로 입력 항목 전환. 끄면 그 키를 통과시켜 직접 바인딩 가능.\n"
         f"shortcuts_enabled = {'true' if shortcuts else 'false'}\n"
+        "# 자음+한자 특수문자 표의 알려진 결함 보정(ㄹ 4번째 °=날개셋, ㅁ 끝 ㉾=최신 Windows).\n"
+        "# 끄면 옛 MS IME 원본 표 그대로.\n"
+        f"fix_symbol_table = {'true' if fix_symbols else 'false'}\n"
     )
+    # 이 설정창이 모르는 키는 지우지 않고 뒤에 보존한다.
+    extras = [f"{k} = {v}" for k, v in load_ini().items() if k not in MANAGED_KEYS]
+    if extras:
+        body += "# (아래는 다른 도구/새 버전이 쓴 설정: 그대로 보존)\n"
+        body += "\n".join(extras) + "\n"
     with open(ini_path(), "w", encoding="utf-8") as f:
         f.write(body)
 
@@ -201,6 +215,23 @@ class SetupWindow(Adw.ApplicationWindow):
         self.shortcuts_row.connect("notify::active", self.on_change)
         sc_group.add(self.shortcuts_row)
 
+        # 한자 키 특수문자 표의 결함 보정 여부.
+        hanja_group = Adw.PreferencesGroup(
+            title="한자 키",
+            description="자음(ㅁ 등)을 조합하다 한자 키를 누르면 특수문자를, 음절에서는 "
+            "한자를 고를 수 있습니다.",
+        )
+        page.add(hanja_group)
+
+        self.fix_symbol_row = Adw.SwitchRow(
+            title="특수문자 표 결함 보정",
+            subtitle="켜면 ㄹ 4번째가 °(날개셋 방식), ㅁ 끝에 ㉾(최신 Windows 방식). "
+            "끄면 옛 MS IME 원본 표 그대로",
+        )
+        self.fix_symbol_row.set_active(_to_bool(cfg.get("fix_symbol_table", "true")))
+        self.fix_symbol_row.connect("notify::active", self.on_change)
+        hanja_group.add(self.fix_symbol_row)
+
         # 키보드 배열 안내(단축키·영문은 GNOME 입력 소스에서 배열별 엔진을 골라 정한다).
         kbd_group = Adw.PreferencesGroup(
             title="키보드 배열",
@@ -255,7 +286,8 @@ class SetupWindow(Adw.ApplicationWindow):
         pick = self.pick_row.get_active()
         e = self.entry_row.get_selected() if self.entries else 0
         shortcuts = self.shortcuts_row.get_active()
-        save_ini(pick, e, shortcuts)
+        fix_symbols = self.fix_symbol_row.get_active()
+        save_ini(pick, e, shortcuts, fix_symbols)
 
     def on_reload(self, *_):
         """입력기를 다시 시작해 자판(nalgaeset.xml)을 다시 읽는다(ibus restart)."""

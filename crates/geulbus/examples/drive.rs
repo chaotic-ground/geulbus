@@ -104,7 +104,7 @@ fn lookup_summary(v: &Value<'_>) -> String {
         .collect();
     let p = (*page as usize).max(1);
     let cur = *cursor as usize;
-    let start = (cur / p) * p;
+    let start = ((cur / p) * p).min(texts.len());
     let end = (start + p).min(texts.len());
     let items: Vec<String> = texts[start..end]
         .iter()

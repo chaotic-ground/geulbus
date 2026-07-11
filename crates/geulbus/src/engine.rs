@@ -3,7 +3,7 @@
 //! 키 이벤트(method)를 받아 조합하고, 결과를 CommitText / UpdatePreeditText
 //! (signal)로 데몬에 돌려준다. 참고: `research/03-ibus-zbus.md` §2,§4.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use geulbus_core::expr::{Ctx, Expr, Value as ExprValue};
 use geulbus_core::{us_qwerty_ascii, Config, Engine as Core};
@@ -221,6 +221,9 @@ pub struct IBusEngine {
     ime_switch: HashMap<u32, Expr>,
     /// KEYCHAR 키심(한자 키 등) → 입력할 날개셋문자 식(예: `C0|0x82` 후보 변환).
     keychar: HashMap<u32, Expr>,
+    /// 눌림을 우리가 소비한 KEYCHAR 키심들. 뗌을 눌림과 대칭으로 소비/통과하기 위한 기록
+    /// (뗌만 삼키면 앱이 press 만 받아 오른쪽 Ctrl 한자 대용 등에서 수식어가 끼인다).
+    keychar_down: HashSet<u32>,
     /// 후보창(한자·특수문자 변환)이 떠 있으면 그 상태.
     candidates: Option<CandidateState>,
     /// 마지막으로 반영한 사용자 설정(config.ini). focus_in/enable 마다 다시 읽어 즉시 반영.
@@ -273,6 +276,13 @@ impl IBusEngine {
 
         // usage=IME_SWITCH 단축글쇠: value 식(예 "!A")을 키심에 매핑.
         // usage=KEYCHAR 단축글쇠: 날개셋문자 식(예 VK_HANJA → "C0|0x82" 후보 변환)을 매핑.
+        // 수식어(Shift/Ctrl/Alt) 변형 항목(예: Shift+한자 = 제2 후보 변환)은 아직 수식어를
+        // 구분해 처리하지 못하므로 건너뛴다 — 같은 키의 맨 항목을 덮어쓰면 안 되기 때문.
+        // (DONT_EAT 같은 플래그성 modifier 는 수식어가 아니므로 통과.)
+        let has_modifier = |m: &[String]| {
+            m.iter()
+                .any(|t| matches!(t.trim(), "SHIFT" | "CONTROL" | "CTRL" | "ALT" | "MENU"))
+        };
         let mut ime_switch: HashMap<u32, Expr> = HashMap::new();
         let mut keychar: HashMap<u32, Expr> = HashMap::new();
         for sc in &config.editor.shortcuts {
@@ -281,9 +291,12 @@ impl IBusEngine {
                 "KEYCHAR" => &mut keychar,
                 _ => continue,
             };
+            if has_modifier(&sc.modifier) {
+                continue;
+            }
             if let Ok(expr) = Expr::parse(&sc.value) {
                 for &ks in vk_to_keysyms(&sc.key) {
-                    table.insert(ks, expr.clone());
+                    table.entry(ks).or_insert_with(|| expr.clone());
                 }
             }
         }
@@ -299,6 +312,7 @@ impl IBusEngine {
             default_entry,
             ime_switch,
             keychar,
+            keychar_down: HashSet::new(),
             candidates: None,
             settings: Settings::default(), // apply_settings 가 곧 덮어쓴다
             pick_idx: 0,
@@ -470,6 +484,226 @@ impl IBusEngine {
         KeyClass::FunctionKey
     }
 
+    /// 분류된 키 하나를 처리한다(process_key_event 의 본체). KEYCHAR 뗌은
+    /// 래퍼가 keychar_down 으로 따로 처리하므로 여기 오는 Keychar 는 눌림뿐이다.
+    async fn handle_key(
+        &mut self,
+        se: &SignalEmitter<'_>,
+        class: KeyClass,
+        keyval: u32,
+        state: u32,
+    ) -> fdo::Result<bool> {
+        let release = state & RELEASE_MASK != 0;
+        // 후보창(변환 모드)이 떠 있으면 키를 후보 탐색/선택으로 먼저 라우팅한다.
+        if self.candidates.is_some() {
+            match self.candidate_action(class, keyval, release) {
+                CandAction::Pass => return Ok(false),
+                CandAction::Consume => return Ok(true),
+                CandAction::Redraw => {
+                    self.show_candidates(se).await;
+                    return Ok(true);
+                }
+                CandAction::Commit(text) => {
+                    if let Mode::Hangul(core) = &mut self.entries[self.current] {
+                        core.reset(); // 조합(원본 글자)을 버리고 후보로 대체
+                    }
+                    self.candidates = None;
+                    Self::hide_candidates(se).await;
+                    Self::emit(se, &text, "").await;
+                    return Ok(true);
+                }
+                CandAction::Cancel => {
+                    self.candidates = None;
+                    Self::hide_candidates(se).await;
+                    return Ok(true); // 조합(preedit)은 그대로 남아 이어서 편집
+                }
+                CandAction::Fallthrough => {
+                    self.candidates = None;
+                    Self::hide_candidates(se).await;
+                    // 취소 후 아래 일반 분기로 계속(예: 다른 자모 입력, IME 전환).
+                }
+            }
+        }
+        match class {
+            // IME_SWITCH(한/영·CapsLock 등): 눌림/뗌 모두 소비, 눌림에서 전환식을 평가.
+            // value 식(예 "!A")을 A=현재 항목으로 평가해 대상 항목을 얻는다. `!A` → 0이면 1, 아니면 0.
+            KeyClass::ImeSwitch => {
+                if !release {
+                    let target = self.switch_target(keyval);
+                    if target != self.current {
+                        self.flush_current(se).await;
+                        self.current = target;
+                        self.update_indicator(se).await; // 패널 심볼(가N/AN) 갱신
+                    }
+                }
+                Ok(true)
+            }
+            // KEYCHAR(한자 키 등): 식을 평가해 날개셋문자를 실행한다.
+            // C0|0x82~0x85(후보 변환)면 조합 글자의 후보(특수문자/한자)창을 연다.
+            // (뗌은 래퍼가 keychar_down 으로 처리하므로 여기 오는 것은 눌림뿐이다.)
+            KeyClass::Keychar => {
+                let Some(val) = self
+                    .keychar
+                    .get(&keyval)
+                    .and_then(|expr| expr.eval(&Ctx::default()).ok())
+                else {
+                    return Ok(false);
+                };
+                let supports_surround =
+                    self.caps & CAP_SURROUNDING_TEXT != 0 && self.got_surrounding;
+                let i = self.current;
+                // 로마자/직접 항목: 조합이 없어 변환 대상이 없으니 통과.
+                let Mode::Hangul(core) = &mut self.entries[i] else {
+                    return Ok(false);
+                };
+                match val {
+                    ExprValue::Command(cmd) => {
+                        core.set_surrounding_ok(supports_surround);
+                        let out = core.command(cmd);
+                        if let Some(req) = out.convert {
+                            let preedit = core.preedit();
+                            return self.open_candidates(se, req, preedit).await;
+                        }
+                        // 변환이 아닌 C0 명령(KEYCHAR 로 배당한 편집 특수글쇠 등):
+                        // Printable 경로와 같게 앞 글자 삭제 요청까지 처리한다.
+                        if out.delete_before > 0 {
+                            if supports_surround {
+                                let _ = Self::delete_surrounding_text(
+                                    se,
+                                    -(out.delete_before as i32),
+                                    out.delete_before,
+                                )
+                                .await;
+                            } else {
+                                core.reset();
+                                return Ok(false);
+                            }
+                        }
+                        Self::emit(se, &out.commit, &out.preedit).await;
+                        Ok(out.consumed)
+                    }
+                    // 날개셋문자가 일반 문자면: 조합 확정 후 그 문자를 입력.
+                    ExprValue::Int(n) => {
+                        let mut commit = core.flush();
+                        if let Some(c) = u32::try_from(n).ok().and_then(char::from_u32) {
+                            commit.push(c);
+                        }
+                        Self::emit(se, &commit, "").await;
+                        Ok(true)
+                    }
+                    ExprValue::Unit(_) => Ok(false),
+                }
+            }
+            // 뗌·수식어 키 자체: 조합에 영향 없이 통과.
+            KeyClass::Release | KeyClass::Modifier => Ok(false),
+            // Ctrl/Alt/Super/Meta 조합(단축키): 조합만 확정하고 응용에 넘긴다.
+            // 단축키 레이아웃은 IME 가 아니라 XKB(사용자 레이아웃)의 몫 — Wayland 에서
+            // IME 의 ForwardKeyEvent 로 키 위치를 바꾸는 건 불가하므로 흉내 내지 않는다.
+            // 사용자가 드보락 단축키를 원하면 자신의 키보드 레이아웃을 드보락으로 둔다.
+            KeyClass::ShortcutCombo => {
+                self.flush_current(se).await;
+                Ok(false)
+            }
+            // 나머지는 현재 항목의 방식에 따라 처리.
+            KeyClass::Backspace | KeyClass::Printable(_) | KeyClass::FunctionKey => {
+                let caps = state & LOCK_MASK != 0;
+                // surrounding-text 가 실제로 동작하는 앱인가(capability 비트만으론 부족해
+                // SetSurroundingText 수신까지 확인). 앞 글자 삭제/결합 특수글쇠의 전제.
+                let supports_surround =
+                    self.caps & CAP_SURROUNDING_TEXT != 0 && self.got_surrounding;
+                let i = self.current;
+                match &mut self.entries[i] {
+                    // 한글 조합 항목.
+                    Mode::Hangul(core) => {
+                        // 앞 글자 결합 특수글쇠(C0 낱자 재결합·앞으로 이동)는 surrounding-text
+                        // 지원 시에만 동작하도록 core 에 현재 지원 여부를 알린다.
+                        core.set_surrounding_ok(supports_surround);
+                        match class {
+                            KeyClass::Backspace => {
+                                // 조합 중이 아니고 BkspAttach 도 불가능하면 응용에 넘긴다.
+                                if core.is_empty() && !supports_surround {
+                                    return Ok(false);
+                                }
+                                let out = core.backspace();
+                                // BkspAttach: 앞의 확정 글자를 응용에서 지운다(지원 시).
+                                if out.delete_before > 0 {
+                                    if supports_surround {
+                                        let _ = Self::delete_surrounding_text(
+                                            se,
+                                            -(out.delete_before as i32),
+                                            out.delete_before,
+                                        )
+                                        .await;
+                                    } else {
+                                        // 못 지우면 되살리기가 무의미 → 통상 백스페이스로 폴백.
+                                        core.reset();
+                                        return Ok(false);
+                                    }
+                                }
+                                if !out.consumed && out.delete_before == 0 {
+                                    return Ok(false);
+                                }
+                                Self::emit(se, &out.commit, &out.preedit).await;
+                                Ok(true)
+                            }
+                            KeyClass::Printable(ascii) => {
+                                let out = core.press(ascii, caps);
+                                // KeyTable 글쇠에 직접 배당된 후보 변환(C0|0x82~0x85).
+                                if let Some(req) = out.convert {
+                                    let preedit = core.preedit();
+                                    return self.open_candidates(se, req, preedit).await;
+                                }
+                                // C0 앞 글자 결합 특수글쇠: 앱의 옛 앞 글자를 지운다(지원 시).
+                                if out.delete_before > 0 {
+                                    if supports_surround {
+                                        let _ = Self::delete_surrounding_text(
+                                            se,
+                                            -(out.delete_before as i32),
+                                            out.delete_before,
+                                        )
+                                        .await;
+                                    } else {
+                                        core.reset();
+                                        return Ok(false);
+                                    }
+                                }
+                                Self::emit(se, &out.commit, &out.preedit).await;
+                                Ok(out.consumed)
+                            }
+                            _ => {
+                                // 기능키: 조합 확정 후 통과.
+                                let commit = core.flush();
+                                if !commit.is_empty() {
+                                    Self::emit(se, &commit, "").await;
+                                }
+                                Ok(false)
+                            }
+                        }
+                    }
+                    // 로마자/직접 항목: KeyTable 로 문자만 내보내고, 매핑 없으면 패스스루.
+                    Mode::Latin { keys } => {
+                        if let KeyClass::Printable(ascii) = class {
+                            if let Some(expr) = keys.get(&(ascii as u32)) {
+                                let ctx = Ctx {
+                                    p: caps as i64,
+                                    ..Default::default()
+                                };
+                                if let Ok(ExprValue::Int(n)) = expr.eval(&ctx) {
+                                    if let Some(ch) = u32::try_from(n).ok().and_then(char::from_u32)
+                                    {
+                                        Self::emit(se, &ch.to_string(), "").await;
+                                        return Ok(true);
+                                    }
+                                }
+                            }
+                        }
+                        Ok(false) // 매핑 없음 / 백스페이스 / 기능키 → 응용에 넘김
+                    }
+                }
+            }
+        }
+    }
+
     // ── 후보창(변환 모드) ────────────────────────────────────────────────────
 
     /// 후보창이 떠 있을 때 키 하나의 동작을 정한다(순수 상태 전이).
@@ -478,16 +712,16 @@ impl IBusEngine {
     fn candidate_action(&mut self, class: KeyClass, keyval: u32, release: bool) -> CandAction {
         let st = self.candidates.as_mut().expect("candidate mode");
         if release {
-            // 우리가 눌림을 소비한 키들의 뗌: 조용히 소비(응용에 홀로 된 뗌을 보내지 않는다).
-            return CandAction::Consume;
+            // 뗌은 엔진 전역 규약과 같게 통과시킨다(눌림을 소비한 키의 홀로 된 뗌은 앱이
+            // 무시하지만, 눌림을 통과시킨 수식어의 뗌을 삼키면 앱에 수식어가 끼인다).
+            // KEYCHAR 뗌은 래퍼(keychar_down)가 눌림과 대칭으로 따로 처리한다.
+            return CandAction::Pass;
         }
         match class {
             KeyClass::Modifier => CandAction::Pass,
-            // 한자 키 재타: 다음 페이지(MS IME 동작).
-            KeyClass::Keychar => {
-                st.page_down();
-                CandAction::Redraw
-            }
+            // 한자 키 재타: 변환 종료(날개셋 ngsm_candconv: "ESC, 한자: 한자 변환 모드를
+            // 종료하고 창을 닫습니다"). 조합은 유지된다.
+            KeyClass::Keychar => CandAction::Cancel,
             KeyClass::Printable(d @ b'1'..=b'9') => {
                 let idx = st.page_start() + (d - b'1') as usize;
                 match st.items.get(idx) {
@@ -495,7 +729,11 @@ impl IBusEngine {
                     None => CandAction::Consume, // 페이지 끝을 넘는 번호: 무시
                 }
             }
-            KeyClass::Printable(b' ') => CandAction::Commit(st.items[st.cursor].0.clone()),
+            // Space: 선택막대 한 칸 이동(날개셋/MS IME 동작. 확정은 Enter/숫자).
+            KeyClass::Printable(b' ') => {
+                st.down();
+                CandAction::Redraw
+            }
             KeyClass::Backspace => CandAction::Cancel,
             KeyClass::FunctionKey => match keyval {
                 KEY_RETURN | KEY_KP_ENTER => CandAction::Commit(st.items[st.cursor].0.clone()),
@@ -521,6 +759,30 @@ impl IBusEngine {
             // 다른 글쇠 입력·IME 전환·단축키: 변환을 취소하고 그 키를 정상 처리.
             _ => CandAction::Fallthrough,
         }
+    }
+
+    /// core 가 올린 후보 변환 요청(convert)에 따라 후보창을 연다. 후보가 없으면
+    /// 조용히 소비(조합 유지). 0x82(기본 한자 변환)만 내장 사전이 있다.
+    /// 0x83~0x85(사용자 후보 2~4)는 데이터 계층 미구현이라 무동작.
+    async fn open_candidates(
+        &mut self,
+        se: &SignalEmitter<'_>,
+        req: u32,
+        preedit: String,
+    ) -> fdo::Result<bool> {
+        let mut chars = preedit.chars();
+        if let (Some(ch), None, 0x82) = (chars.next(), chars.next(), req) {
+            let items = build_candidates(ch, self.settings.fix_symbol_table);
+            if !items.is_empty() {
+                self.candidates = Some(CandidateState {
+                    items,
+                    source: preedit,
+                    cursor: 0,
+                });
+                self.show_candidates(se).await;
+            }
+        }
+        Ok(true)
     }
 
     /// 후보창과 보조 텍스트(변환 대상 글자)를 (다시) 그린다.
@@ -588,210 +850,21 @@ impl IBusEngine {
         }
         let class = self.classify(keyval, keycode, state);
         let release = state & RELEASE_MASK != 0;
-        // 후보창(변환 모드)이 떠 있으면 키를 후보 탐색/선택으로 먼저 라우팅한다.
-        if self.candidates.is_some() {
-            match self.candidate_action(class, keyval, release) {
-                CandAction::Pass => return Ok(false),
-                CandAction::Consume => return Ok(true),
-                CandAction::Redraw => {
-                    self.show_candidates(&se).await;
-                    return Ok(true);
-                }
-                CandAction::Commit(text) => {
-                    if let Mode::Hangul(core) = &mut self.entries[self.current] {
-                        core.reset(); // 조합(원본 글자)을 버리고 후보로 대체
-                    }
-                    self.candidates = None;
-                    Self::hide_candidates(&se).await;
-                    Self::emit(&se, &text, "").await;
-                    return Ok(true);
-                }
-                CandAction::Cancel => {
-                    self.candidates = None;
-                    Self::hide_candidates(&se).await;
-                    return Ok(true); // 조합(preedit)은 그대로 남아 이어서 편집
-                }
-                CandAction::Fallthrough => {
-                    self.candidates = None;
-                    Self::hide_candidates(&se).await;
-                    // 취소 후 아래 일반 분기로 계속(예: 다른 자모 입력, IME 전환).
-                }
+        // KEYCHAR(한자 키 등)의 뗌: 눌림을 우리가 실제로 소비했을 때만 뗌도 소비한다.
+        // 비대칭으로 뗌만 삼키면 앱이 press 만 받고 release 를 영영 못 받아
+        // 수식어 끼임(오른쪽 Ctrl 한자 대용 등)이 생긴다.
+        if class == KeyClass::Keychar && release {
+            return Ok(self.keychar_down.remove(&keyval));
+        }
+        let handled = self.handle_key(&se, class, keyval, state).await?;
+        if class == KeyClass::Keychar {
+            if handled {
+                self.keychar_down.insert(keyval);
+            } else {
+                self.keychar_down.remove(&keyval);
             }
         }
-        match class {
-            // IME_SWITCH(한/영·CapsLock 등): 눌림/뗌 모두 소비, 눌림에서 전환식을 평가.
-            // value 식(예 "!A")을 A=현재 항목으로 평가해 대상 항목을 얻는다. `!A` → 0이면 1, 아니면 0.
-            KeyClass::ImeSwitch => {
-                if !release {
-                    let target = self.switch_target(keyval);
-                    if target != self.current {
-                        self.flush_current(&se).await;
-                        self.current = target;
-                        self.update_indicator(&se).await; // 패널 심볼(가N/AN) 갱신
-                    }
-                }
-                Ok(true)
-            }
-            // KEYCHAR(한자 키 등): 식을 평가해 날개셋문자를 실행한다.
-            // C0|0x82~0x85(후보 변환)면 조합 글자의 후보(특수문자/한자)창을 연다.
-            KeyClass::Keychar => {
-                if release {
-                    return Ok(true); // 눌림을 소비했으니 뗌도 소비
-                }
-                let Some(val) = self
-                    .keychar
-                    .get(&keyval)
-                    .and_then(|expr| expr.eval(&Ctx::default()).ok())
-                else {
-                    return Ok(false);
-                };
-                let fix_symbols = self.settings.fix_symbol_table;
-                let i = self.current;
-                // 로마자/직접 항목: 조합이 없어 변환 대상이 없으니 통과.
-                let Mode::Hangul(core) = &mut self.entries[i] else {
-                    return Ok(false);
-                };
-                match val {
-                    ExprValue::Command(cmd) => {
-                        let out = core.command(cmd);
-                        if let Some(req) = out.convert {
-                            // 후보 변환 요청: preedit 한 글자로 후보를 찾는다.
-                            // 0x82(기본 한자 변환)만 내장 사전이 있다. 0x83~0x85(사용자
-                            // 후보 2~4)는 데이터 계층 미구현 → 무동작(키만 소비).
-                            let preedit = core.preedit();
-                            let mut chars = preedit.chars();
-                            if let (Some(ch), None, 0x82) = (chars.next(), chars.next(), req) {
-                                let items = build_candidates(ch, fix_symbols);
-                                if !items.is_empty() {
-                                    self.candidates = Some(CandidateState {
-                                        items,
-                                        source: preedit,
-                                        cursor: 0,
-                                    });
-                                    self.show_candidates(&se).await;
-                                }
-                            }
-                            return Ok(true);
-                        }
-                        // 변환이 아닌 C0 명령(KEYCHAR 로 배당한 편집 특수글쇠 등).
-                        Self::emit(&se, &out.commit, &out.preedit).await;
-                        Ok(out.consumed)
-                    }
-                    // 날개셋문자가 일반 문자면: 조합 확정 후 그 문자를 입력.
-                    ExprValue::Int(n) => {
-                        let mut commit = core.flush();
-                        if let Some(c) = u32::try_from(n).ok().and_then(char::from_u32) {
-                            commit.push(c);
-                        }
-                        Self::emit(&se, &commit, "").await;
-                        Ok(true)
-                    }
-                    ExprValue::Unit(_) => Ok(false),
-                }
-            }
-            // 뗌·수식어 키 자체: 조합에 영향 없이 통과.
-            KeyClass::Release | KeyClass::Modifier => Ok(false),
-            // Ctrl/Alt/Super/Meta 조합(단축키): 조합만 확정하고 응용에 넘긴다.
-            // 단축키 레이아웃은 IME 가 아니라 XKB(사용자 레이아웃)의 몫 — Wayland 에서
-            // IME 의 ForwardKeyEvent 로 키 위치를 바꾸는 건 불가하므로 흉내 내지 않는다.
-            // 사용자가 드보락 단축키를 원하면 자신의 키보드 레이아웃을 드보락으로 둔다.
-            KeyClass::ShortcutCombo => {
-                self.flush_current(&se).await;
-                Ok(false)
-            }
-            // 나머지는 현재 항목의 방식에 따라 처리.
-            KeyClass::Backspace | KeyClass::Printable(_) | KeyClass::FunctionKey => {
-                let caps = state & LOCK_MASK != 0;
-                // surrounding-text 가 실제로 동작하는 앱인가(capability 비트만으론 부족해
-                // SetSurroundingText 수신까지 확인). 앞 글자 삭제/결합 특수글쇠의 전제.
-                let supports_surround =
-                    self.caps & CAP_SURROUNDING_TEXT != 0 && self.got_surrounding;
-                let i = self.current;
-                match &mut self.entries[i] {
-                    // 한글 조합 항목.
-                    Mode::Hangul(core) => {
-                        // 앞 글자 결합 특수글쇠(C0 낱자 재결합·앞으로 이동)는 surrounding-text
-                        // 지원 시에만 동작하도록 core 에 현재 지원 여부를 알린다.
-                        core.set_surrounding_ok(supports_surround);
-                        match class {
-                            KeyClass::Backspace => {
-                                // 조합 중이 아니고 BkspAttach 도 불가능하면 응용에 넘긴다.
-                                if core.is_empty() && !supports_surround {
-                                    return Ok(false);
-                                }
-                                let out = core.backspace();
-                                // BkspAttach: 앞의 확정 글자를 응용에서 지운다(지원 시).
-                                if out.delete_before > 0 {
-                                    if supports_surround {
-                                        let _ = Self::delete_surrounding_text(
-                                            &se,
-                                            -(out.delete_before as i32),
-                                            out.delete_before,
-                                        )
-                                        .await;
-                                    } else {
-                                        // 못 지우면 되살리기가 무의미 → 통상 백스페이스로 폴백.
-                                        core.reset();
-                                        return Ok(false);
-                                    }
-                                }
-                                if !out.consumed && out.delete_before == 0 {
-                                    return Ok(false);
-                                }
-                                Self::emit(&se, &out.commit, &out.preedit).await;
-                                Ok(true)
-                            }
-                            KeyClass::Printable(ascii) => {
-                                let out = core.press(ascii, caps);
-                                // C0 앞 글자 결합 특수글쇠: 앱의 옛 앞 글자를 지운다(지원 시).
-                                if out.delete_before > 0 {
-                                    if supports_surround {
-                                        let _ = Self::delete_surrounding_text(
-                                            &se,
-                                            -(out.delete_before as i32),
-                                            out.delete_before,
-                                        )
-                                        .await;
-                                    } else {
-                                        core.reset();
-                                        return Ok(false);
-                                    }
-                                }
-                                Self::emit(&se, &out.commit, &out.preedit).await;
-                                Ok(out.consumed)
-                            }
-                            _ => {
-                                // 기능키: 조합 확정 후 통과.
-                                let commit = core.flush();
-                                if !commit.is_empty() {
-                                    Self::emit(&se, &commit, "").await;
-                                }
-                                Ok(false)
-                            }
-                        }
-                    }
-                    // 로마자/직접 항목: KeyTable 로 문자만 내보내고, 매핑 없으면 패스스루.
-                    Mode::Latin { keys } => {
-                        if let KeyClass::Printable(ascii) = class {
-                            if let Some(expr) = keys.get(&(ascii as u32)) {
-                                let ctx = Ctx {
-                                    p: caps as i64,
-                                    ..Default::default()
-                                };
-                                if let Ok(ExprValue::Int(n)) = expr.eval(&ctx) {
-                                    if let Some(ch) = u32::try_from(n).ok().and_then(char::from_u32)
-                                    {
-                                        Self::emit(&se, &ch.to_string(), "").await;
-                                        return Ok(true);
-                                    }
-                                }
-                            }
-                        }
-                        Ok(false) // 매핑 없음 / 백스페이스 / 기능키 → 응용에 넘김
-                    }
-                }
-            }
-        }
+        Ok(handled)
     }
 
     async fn focus_in(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
@@ -1230,6 +1303,38 @@ mod tests {
     }
 
     #[test]
+    fn shifted_keychar_variant_is_skipped() {
+        // 같은 키의 수식어 변형(예: Shift+한자 = 제2 후보 변환)은 아직 수식어를 구분하지
+        // 못하므로 건너뛴다. 먼저 나와도 맨 항목을 덮어쓰면 안 된다.
+        const XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<EditContextSetting version="0x500">
+  <EditorLayer flag="0">
+    <ShortcutTable>
+      <Shortcut key="VK_HANJA" modifier="SHIFT" usage="KEYCHAR" value="C0|0x83"/>
+      <Shortcut key="VK_HANJA" usage="KEYCHAR" value="C0|0x82"/>
+    </ShortcutTable>
+  </EditorLayer>
+  <InputLayer default="0" current="0">
+    <InputEntry>
+      <InputSchemeSetting object="CBasicInputScheme">
+        <KeyTable name="mini" flag="0" from="33" to="126">
+          <Key at="0x6B" value="H3|G_"/>
+        </KeyTable>
+      </InputSchemeSetting>
+      <GeneratorSetting object="CNgsImeEx">
+        <UnitMixTable/><VirtualUnitTable/><AutomataTable default="0"/>
+      </GeneratorSetting>
+    </InputEntry>
+  </InputLayer>
+</EditContextSetting>"#;
+        use geulbus_core::expr::{Ctx, Value as EV};
+        let cfg = Config::parse(XML).unwrap();
+        let e = IBusEngine::with_settings(&cfg, Settings::default());
+        let expr = e.keychar.get(&0xff34).expect("plain hanja keychar");
+        assert_eq!(expr.eval(&Ctx::default()).unwrap(), EV::Command(0x82));
+    }
+
+    #[test]
     fn keychar_expr_evaluates_to_convert_command() {
         use geulbus_core::expr::{Ctx, Value as EV};
         let e = engine();
@@ -1309,20 +1414,26 @@ mod tests {
             e.candidate_action(KeyClass::Printable(b'9'), 0, false),
             CandAction::Consume
         );
+        // Space → 선택막대 한 칸 이동(날개셋/MS IME. 확정이 아니다).
+        assert_eq!(
+            e.candidate_action(KeyClass::Printable(b' '), 0, false),
+            CandAction::Redraw
+        );
+        assert_eq!(e.candidates.as_ref().unwrap().cursor, 1);
         // 다른 글쇠 입력 → 취소 후 일반 경로로 계속.
         assert_eq!(
             e.candidate_action(KeyClass::Printable(b'k'), 0, false),
             CandAction::Fallthrough
         );
-        // 뗌은 조용히 소비.
+        // 뗌은 통과(눌림을 통과시킨 수식어의 뗌을 삼키면 앱에 수식어가 끼인다).
         assert_eq!(
             e.candidate_action(KeyClass::Release, 0, true),
-            CandAction::Consume
+            CandAction::Pass
         );
-        // 한자 키 재타 → 페이지 이동(다시 그림).
+        // 한자 키 재타 → 변환 종료(날개셋: "ESC, 한자: 종료").
         assert_eq!(
             e.candidate_action(KeyClass::Keychar, 0xff34, false),
-            CandAction::Redraw
+            CandAction::Cancel
         );
         // 수식어는 통과(후보창 유지).
         assert_eq!(

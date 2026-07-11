@@ -35,7 +35,7 @@ pub fn make_lookup_table(candidates: &[String], cursor: u32) -> Value<'static> {
         .add_field(PAGE_SIZE) // page_size (u)
         .add_field(cursor) // cursor_pos (u)
         .add_field(true) // cursor_visible (b)
-        .add_field(false) // round (b)
+        .add_field(true) // round (b): 엔진의 페이징이 순환(wrap)하므로 패널에도 알린다
         .add_field(ORIENTATION_VERTICAL) // orientation (i)
         .add_field(items) // candidates (av)
         .add_field(Vec::<Value<'static>>::new()) // labels (av, 비면 패널이 1..9 기본 번호)
