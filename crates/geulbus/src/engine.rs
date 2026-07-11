@@ -809,8 +809,13 @@ impl IBusEngine {
 
     async fn focus_out(
         &mut self,
-        #[zbus(signal_emitter)] _se: SignalEmitter<'_>,
+        #[zbus(signal_emitter)] se: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
+        // 후보창이 뜬 채 포커스가 떠나면 변환을 취소한다(상태가 남으면 다음 컨텍스트의
+        // 키가 후보 탐색으로 새어 들어간다).
+        if self.candidates.take().is_some() {
+            Self::hide_candidates(&se).await;
+        }
         // preedit 는 그대로 두고(클라이언트가 COMMIT 모드로 확정) 내부만 비운다.
         self.drop_composing();
         Ok(())
@@ -819,6 +824,9 @@ impl IBusEngine {
     async fn reset(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
         // 명시적 Reset(취소): 조합을 비우고 preedit 도 지운다. (엔진 전환은 Reset 이 아니라
         // focus_out 경로로 오며, 거기선 COMMIT 모드로 글자를 보존한다.)
+        if self.candidates.take().is_some() {
+            Self::hide_candidates(&se).await;
+        }
         self.drop_composing();
         Self::emit(&se, "", "").await;
         Ok(())
@@ -840,8 +848,11 @@ impl IBusEngine {
         self.got_surrounding = true;
     }
 
-    async fn disable(&mut self, #[zbus(signal_emitter)] _se: SignalEmitter<'_>) -> fdo::Result<()> {
+    async fn disable(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
         // focus_out 과 동일: preedit 는 클라이언트가 COMMIT, 내부만 비운다.
+        if self.candidates.take().is_some() {
+            Self::hide_candidates(&se).await;
+        }
         self.drop_composing();
         Ok(())
     }
