@@ -11,7 +11,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::Value;
 use zbus::{fdo, interface};
 
-use crate::ibus_lookup_table::{make_lookup_table, PAGE_SIZE};
+use crate::ibus_lookup_table::{make_lookup_table, EXPANDED_PAGE_SIZE, PAGE_SIZE};
 use crate::ibus_property::{make_input_mode_property, make_prop_list};
 use crate::ibus_text::{make_ibus_text, make_preedit_text};
 use crate::settings::Settings;
@@ -37,12 +37,17 @@ const KEY_HANGUL: u32 = 0xff31;
 const KEY_RETURN: u32 = 0xff0d;
 const KEY_KP_ENTER: u32 = 0xff8d;
 const KEY_ESCAPE: u32 = 0xff1b;
+const KEY_TAB: u32 = 0xff09;
+const KEY_HOME: u32 = 0xff50;
 const KEY_LEFT: u32 = 0xff51;
 const KEY_UP: u32 = 0xff52;
 const KEY_RIGHT: u32 = 0xff53;
 const KEY_DOWN: u32 = 0xff54;
 const KEY_PAGE_UP: u32 = 0xff55;
 const KEY_PAGE_DOWN: u32 = 0xff56;
+const KEY_END: u32 = 0xff57;
+const KEY_KP_1: u32 = 0xffb1;
+const KEY_KP_9: u32 = 0xffb9;
 
 /// `GEULBUS_DEBUG_KEYS` 환경변수가 켜져 있으면 키 이벤트를 stderr 로 로깅한다.
 fn debug_keys_enabled() -> bool {
@@ -99,15 +104,21 @@ enum KeyClass {
 struct CandidateState {
     /// (확정할 문자열, 표시용 덧말 — 한자는 훈음, 특수문자는 빈 문자열).
     items: Vec<(String, String)>,
-    /// 변환 대상이 된 조합 글자(후보창 보조 텍스트로 표시).
+    /// 변환 대상이 된 조합 글자(후보창 보조 텍스트로 표시, 형식 삽입의 독음).
     source: String,
     /// 전체 목록 기준 커서 위치(< items.len()).
     cursor: usize,
+    /// Tab 확장 모드: 날개셋의 "수십 개를 한번에" 표시를 큰 페이지로 흉내 낸다.
+    expanded: bool,
 }
 
 impl CandidateState {
     fn page(&self) -> usize {
-        PAGE_SIZE as usize
+        if self.expanded {
+            EXPANDED_PAGE_SIZE as usize
+        } else {
+            PAGE_SIZE as usize
+        }
     }
     fn page_start(&self) -> usize {
         (self.cursor / self.page()) * self.page()
@@ -160,6 +171,34 @@ enum CandAction {
     Cancel,
     /// 변환을 취소한 뒤 이 키를 일반 경로로 계속 처리(예: 다른 자모 입력).
     Fallthrough,
+}
+
+/// 후보 확정 문자열에 형식 삽입을 적용한다(날개셋 후보창 규약).
+/// Ctrl = `漢(한)`(후보(독음)), Shift = `한(漢)`(독음(후보)), 그 외 = 후보 그대로.
+fn format_candidate(text: &str, source: &str, state: u32) -> String {
+    if state & CONTROL_MASK != 0 {
+        format!("{text}({source})")
+    } else if state & SHIFT_MASK != 0 {
+        format!("{source}({text})")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Shift+숫자열이 US-QWERTY 기호로 환산된 것을 번호(1~9)로 되돌린다.
+fn shifted_digit(ascii: u8) -> Option<usize> {
+    Some(match ascii {
+        b'!' => 1,
+        b'@' => 2,
+        b'#' => 3,
+        b'$' => 4,
+        b'%' => 5,
+        b'^' => 6,
+        b'&' => 7,
+        b'*' => 8,
+        b'(' => 9,
+        _ => return None,
+    })
 }
 
 /// 변환 대상 글자의 후보 목록. 자음이면 특수문자 표(okpyeon mssymbol,
@@ -496,7 +535,7 @@ impl IBusEngine {
         let release = state & RELEASE_MASK != 0;
         // 후보창(변환 모드)이 떠 있으면 키를 후보 탐색/선택으로 먼저 라우팅한다.
         if self.candidates.is_some() {
-            match self.candidate_action(class, keyval, release) {
+            match self.candidate_action(class, keyval, state) {
                 CandAction::Pass => return Ok(false),
                 CandAction::Consume => return Ok(true),
                 CandAction::Redraw => {
@@ -707,37 +746,85 @@ impl IBusEngine {
     // ── 후보창(변환 모드) ────────────────────────────────────────────────────
 
     /// 후보창이 떠 있을 때 키 하나의 동작을 정한다(순수 상태 전이).
-    /// 숫자 1~9 = 현재 페이지에서 선택, Enter/Space = 커서 후보 확정, Esc/Backspace = 취소,
-    /// 방향키/PgUp/PgDn/한자 키 = 이동. 그 외 글쇠는 취소 후 일반 경로로 계속(Fallthrough).
-    fn candidate_action(&mut self, class: KeyClass, keyval: u32, release: bool) -> CandAction {
+    /// 날개셋 후보창 규약(ngsm_candconv): 숫자 1~9 = 페이지 내 선택, Enter = 확정,
+    /// Space/방향키 = 한 칸 이동, PgUp/PgDn = 페이지 이동, Home/End = 첫/끝,
+    /// A~Z = 해당 페이지로 점프, Tab = 확장 모드 전환, Esc/한자/Backspace = 취소,
+    /// Ctrl+Enter·번호 = 漢(한) 형식, Shift+Enter·번호 = 한(漢) 형식.
+    fn candidate_action(&mut self, class: KeyClass, keyval: u32, state: u32) -> CandAction {
         let st = self.candidates.as_mut().expect("candidate mode");
-        if release {
+        if state & RELEASE_MASK != 0 {
             // 뗌은 엔진 전역 규약과 같게 통과시킨다(눌림을 소비한 키의 홀로 된 뗌은 앱이
             // 무시하지만, 눌림을 통과시킨 수식어의 뗌을 삼키면 앱에 수식어가 끼인다).
             // KEYCHAR 뗌은 래퍼(keychar_down)가 눌림과 대칭으로 따로 처리한다.
             return CandAction::Pass;
         }
+        // 페이지 내 번호 선택(1~9). Ctrl/Shift 가 눌려 있으면 형식 삽입.
+        let select = |st: &CandidateState, n: usize| {
+            let idx = st.page_start() + n - 1;
+            match st.items.get(idx) {
+                Some(item) => CandAction::Commit(format_candidate(&item.0, &st.source, state)),
+                None => CandAction::Consume, // 페이지 끝을 넘는 번호: 무시
+            }
+        };
         match class {
             KeyClass::Modifier => CandAction::Pass,
-            // 한자 키 재타: 변환 종료(날개셋 ngsm_candconv: "ESC, 한자: 한자 변환 모드를
-            // 종료하고 창을 닫습니다"). 조합은 유지된다.
+            // 한자 키 재타: 변환 종료(날개셋: "ESC, 한자: 한자 변환 모드를 종료"). 조합 유지.
             KeyClass::Keychar => CandAction::Cancel,
-            KeyClass::Printable(d @ b'1'..=b'9') => {
-                let idx = st.page_start() + (d - b'1') as usize;
-                match st.items.get(idx) {
-                    Some(item) => CandAction::Commit(item.0.clone()),
-                    None => CandAction::Consume, // 페이지 끝을 넘는 번호: 무시
-                }
-            }
+            KeyClass::Printable(d @ b'1'..=b'9') => select(st, (d - b'0') as usize),
             // Space: 선택막대 한 칸 이동(날개셋/MS IME 동작. 확정은 Enter/숫자).
             KeyClass::Printable(b' ') => {
                 st.down();
                 CandAction::Redraw
             }
+            // A~Z: 해당 페이지로 선택막대 이동(A=1페이지…). "B5" 식 빠른 선택용.
+            // Shift+숫자열은 US-QWERTY 기호로 오므로 번호 선택(한(漢) 형식)으로 되돌린다.
+            KeyClass::Printable(c) => {
+                if let Some(n) = shifted_digit(c) {
+                    return select(st, n);
+                }
+                let page_idx = match c {
+                    b'a'..=b'z' => (c - b'a') as usize,
+                    b'A'..=b'Z' => (c - b'A') as usize,
+                    // 그 외 글쇠: 변환을 취소하고 일반 경로로 계속(예: 문장부호 입력).
+                    _ => return CandAction::Fallthrough,
+                };
+                let target = page_idx * st.page();
+                if target < st.items.len() {
+                    st.cursor = target;
+                    CandAction::Redraw
+                } else {
+                    CandAction::Consume // 없는 페이지: 무시
+                }
+            }
             KeyClass::Backspace => CandAction::Cancel,
+            // Ctrl+Enter/번호: 漢(한) 형식 삽입(Ctrl 은 ShortcutCombo 로 분류된다).
+            KeyClass::ShortcutCombo => match keyval {
+                KEY_RETURN | KEY_KP_ENTER => {
+                    CandAction::Commit(format_candidate(&st.items[st.cursor].0, &st.source, state))
+                }
+                0x31..=0x39 => select(st, (keyval - 0x30) as usize),
+                _ => CandAction::Fallthrough, // 진짜 단축키(Ctrl+C 등): 취소 후 통과
+            },
             KeyClass::FunctionKey => match keyval {
-                KEY_RETURN | KEY_KP_ENTER => CandAction::Commit(st.items[st.cursor].0.clone()),
+                KEY_RETURN | KEY_KP_ENTER => {
+                    CandAction::Commit(format_candidate(&st.items[st.cursor].0, &st.source, state))
+                }
+                // 숫자패드 1~9(NumLock): 번호 선택과 동일.
+                KEY_KP_1..=KEY_KP_9 => select(st, (keyval - KEY_KP_1 + 1) as usize),
                 KEY_ESCAPE => CandAction::Cancel,
+                KEY_HOME => {
+                    st.cursor = 0;
+                    CandAction::Redraw
+                }
+                KEY_END => {
+                    st.cursor = st.items.len() - 1;
+                    CandAction::Redraw
+                }
+                // Tab: 기본(9개) ↔ 확장(수십 개) 모드 전환.
+                KEY_TAB => {
+                    st.expanded = !st.expanded;
+                    CandAction::Redraw
+                }
                 KEY_UP => {
                     st.up();
                     CandAction::Redraw
@@ -756,7 +843,7 @@ impl IBusEngine {
                 }
                 _ => CandAction::Fallthrough,
             },
-            // 다른 글쇠 입력·IME 전환·단축키: 변환을 취소하고 그 키를 정상 처리.
+            // 그 외(IME 전환 등): 변환을 취소하고 그 키를 정상 처리.
             _ => CandAction::Fallthrough,
         }
     }
@@ -778,6 +865,7 @@ impl IBusEngine {
                     items,
                     source: preedit,
                     cursor: 0,
+                    expanded: false,
                 });
                 self.show_candidates(se).await;
             }
@@ -800,8 +888,8 @@ impl IBusEngine {
             })
             .collect();
         let _ = Self::update_auxiliary_text(se, make_ibus_text(st.source.clone()), true).await;
-        let _ = Self::update_lookup_table(se, make_lookup_table(&display, st.cursor as u32), true)
-            .await;
+        let table = make_lookup_table(&display, st.cursor as u32, st.page() as u32);
+        let _ = Self::update_lookup_table(se, table, true).await;
     }
 
     /// 후보창과 보조 텍스트를 내린다.
@@ -811,12 +899,13 @@ impl IBusEngine {
     }
 
     /// 후보 `idx` 로 확정: 조합(원본 글자)을 버리고 후보 문자열을 확정 입력한다.
-    async fn commit_candidate(&mut self, se: &SignalEmitter<'_>, idx: usize) {
+    /// `state` 에 Ctrl/Shift 가 있으면 형식 삽입(漢(한)/한(漢))을 적용한다.
+    async fn commit_candidate(&mut self, se: &SignalEmitter<'_>, idx: usize, state: u32) {
         let Some(text) = self
             .candidates
             .as_ref()
-            .and_then(|st| st.items.get(idx))
-            .map(|item| item.0.clone())
+            .and_then(|st| st.items.get(idx).map(|item| (item, &st.source)))
+            .map(|(item, source)| format_candidate(&item.0, source, state))
         else {
             return;
         };
@@ -971,16 +1060,17 @@ impl IBusEngine {
         }
     }
     /// 패널에서 후보를 클릭. `index` 는 현재 페이지 안 위치(0부터).
+    /// Ctrl/Shift+좌클릭은 형식 삽입(날개셋 규약, state 로 전달됨).
     async fn candidate_clicked(
         &mut self,
         #[zbus(signal_emitter)] se: SignalEmitter<'_>,
         index: u32,
         _button: u32,
-        _state: u32,
+        state: u32,
     ) {
         let Some(st) = &self.candidates else { return };
         let idx = st.page_start() + index as usize;
-        self.commit_candidate(&se, idx).await;
+        self.commit_candidate(&se, idx, state).await;
     }
 
     // ── 신호(engine → daemon) ────────────────────────────────────────────────
@@ -1367,6 +1457,7 @@ mod tests {
             items: (0..20).map(|i| (i.to_string(), String::new())).collect(),
             source: "ㅁ".into(),
             cursor: 0,
+            expanded: false,
         };
         st.up();
         assert_eq!(st.cursor, 19); // 처음에서 위로: 끝으로 순환
@@ -1393,52 +1484,128 @@ mod tests {
             ],
             source: "ㅁ".to_string(),
             cursor: 0,
+            expanded: false,
         });
         // 숫자 2 → 현재 페이지 2번째 후보 확정.
         assert_eq!(
-            e.candidate_action(KeyClass::Printable(b'2'), 0, false),
+            e.candidate_action(KeyClass::Printable(b'2'), 0, 0),
             CandAction::Commit("★".to_string())
         );
         // Enter → 커서 후보 확정.
         assert_eq!(
-            e.candidate_action(KeyClass::FunctionKey, KEY_RETURN, false),
+            e.candidate_action(KeyClass::FunctionKey, KEY_RETURN, 0),
             CandAction::Commit("※".to_string())
         );
         // Esc → 취소(조합 유지).
         assert_eq!(
-            e.candidate_action(KeyClass::FunctionKey, KEY_ESCAPE, false),
+            e.candidate_action(KeyClass::FunctionKey, KEY_ESCAPE, 0),
             CandAction::Cancel
         );
         // 페이지 밖 번호 → 소비만(무동작).
         assert_eq!(
-            e.candidate_action(KeyClass::Printable(b'9'), 0, false),
+            e.candidate_action(KeyClass::Printable(b'9'), 0, 0),
             CandAction::Consume
         );
         // Space → 선택막대 한 칸 이동(날개셋/MS IME. 확정이 아니다).
         assert_eq!(
-            e.candidate_action(KeyClass::Printable(b' '), 0, false),
+            e.candidate_action(KeyClass::Printable(b' '), 0, 0),
             CandAction::Redraw
         );
         assert_eq!(e.candidates.as_ref().unwrap().cursor, 1);
-        // 다른 글쇠 입력 → 취소 후 일반 경로로 계속.
+        // 문장부호 등 그 외 글쇠 → 취소 후 일반 경로로 계속.
         assert_eq!(
-            e.candidate_action(KeyClass::Printable(b'k'), 0, false),
+            e.candidate_action(KeyClass::Printable(b'.'), 0, 0),
             CandAction::Fallthrough
         );
         // 뗌은 통과(눌림을 통과시킨 수식어의 뗌을 삼키면 앱에 수식어가 끼인다).
         assert_eq!(
-            e.candidate_action(KeyClass::Release, 0, true),
+            e.candidate_action(KeyClass::Release, 0, RELEASE_MASK),
             CandAction::Pass
         );
         // 한자 키 재타 → 변환 종료(날개셋: "ESC, 한자: 종료").
         assert_eq!(
-            e.candidate_action(KeyClass::Keychar, 0xff34, false),
+            e.candidate_action(KeyClass::Keychar, 0xff34, 0),
             CandAction::Cancel
         );
         // 수식어는 통과(후보창 유지).
         assert_eq!(
-            e.candidate_action(KeyClass::Modifier, 0xffe1, false),
+            e.candidate_action(KeyClass::Modifier, 0xffe1, 0),
             CandAction::Pass
+        );
+    }
+
+    #[test]
+    fn candidate_action_nalgaeset_extra_keys() {
+        // 항목 20개짜리 후보창: 한자 후보처럼 훈음이 있는 목록으로 형식 삽입도 검증.
+        let mut e = engine();
+        e.candidates = Some(CandidateState {
+            items: (0..20).map(|i| (format!("한{i}"), String::new())).collect(),
+            source: "학".to_string(),
+            cursor: 0,
+            expanded: false,
+        });
+        // A~Z: 해당 페이지로 선택막대 이동(b = 2페이지 = 인덱스 9).
+        assert_eq!(
+            e.candidate_action(KeyClass::Printable(b'b'), 0, 0),
+            CandAction::Redraw
+        );
+        assert_eq!(e.candidates.as_ref().unwrap().cursor, 9);
+        // 없는 페이지(z = 26페이지)는 무시.
+        assert_eq!(
+            e.candidate_action(KeyClass::Printable(b'z'), 0, 0),
+            CandAction::Consume
+        );
+        // Home/End: 첫/마지막 후보로.
+        assert_eq!(
+            e.candidate_action(KeyClass::FunctionKey, KEY_END, 0),
+            CandAction::Redraw
+        );
+        assert_eq!(e.candidates.as_ref().unwrap().cursor, 19);
+        assert_eq!(
+            e.candidate_action(KeyClass::FunctionKey, KEY_HOME, 0),
+            CandAction::Redraw
+        );
+        assert_eq!(e.candidates.as_ref().unwrap().cursor, 0);
+        // Tab: 확장 모드(페이지 16) 전환 → 페이지 크기가 바뀐다.
+        assert_eq!(
+            e.candidate_action(KeyClass::FunctionKey, KEY_TAB, 0),
+            CandAction::Redraw
+        );
+        assert_eq!(e.candidates.as_ref().unwrap().page(), 16);
+        assert_eq!(
+            e.candidate_action(KeyClass::FunctionKey, KEY_TAB, 0),
+            CandAction::Redraw
+        );
+        assert_eq!(e.candidates.as_ref().unwrap().page(), 9);
+        // 숫자패드 3 → 페이지 3번째 후보.
+        assert_eq!(
+            e.candidate_action(KeyClass::FunctionKey, KEY_KP_1 + 2, 0),
+            CandAction::Commit("한2".to_string())
+        );
+        // Ctrl+Enter → 漢(한) 형식. Ctrl 은 ShortcutCombo 로 분류돼 들어온다.
+        assert_eq!(
+            e.candidate_action(KeyClass::ShortcutCombo, KEY_RETURN, CONTROL_MASK),
+            CandAction::Commit("한0(학)".to_string())
+        );
+        // Ctrl+2 → 2번째 후보를 漢(한) 형식으로.
+        assert_eq!(
+            e.candidate_action(KeyClass::ShortcutCombo, b'2' as u32, CONTROL_MASK),
+            CandAction::Commit("한1(학)".to_string())
+        );
+        // Ctrl+C 같은 진짜 단축키는 취소 후 통과.
+        assert_eq!(
+            e.candidate_action(KeyClass::ShortcutCombo, b'c' as u32, CONTROL_MASK),
+            CandAction::Fallthrough
+        );
+        // Shift+Enter → 한(漢) 형식.
+        assert_eq!(
+            e.candidate_action(KeyClass::FunctionKey, KEY_RETURN, SHIFT_MASK),
+            CandAction::Commit("학(한0)".to_string())
+        );
+        // Shift+2 는 US-QWERTY '@' 로 오며 → 2번째 후보를 한(漢) 형식으로.
+        assert_eq!(
+            e.candidate_action(KeyClass::Printable(b'@'), 0, SHIFT_MASK),
+            CandAction::Commit("학(한1)".to_string())
         );
     }
 }

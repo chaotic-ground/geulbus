@@ -19,12 +19,16 @@ use crate::ibus_text::make_ibus_text;
 /// 한 페이지 후보 수. MS IME/ibus-hangul 과 같은 9.
 pub const PAGE_SIZE: u32 = 9;
 
+/// Tab 확장 모드의 페이지 크기. 날개셋의 "수십 개를 한번에"를 흉내 내되,
+/// GNOME 셸 패널이 페이지당 최대 16개까지만 그리므로(MAX_CANDIDATES_PER_PAGE) 16.
+pub const EXPANDED_PAGE_SIZE: u32 = 16;
+
 /// 세로 방향(IBUS_ORIENTATION_VERTICAL). 훈음이 붙는 후보는 세로가 읽기 좋다.
 const ORIENTATION_VERTICAL: i32 = 1;
 
 /// 후보 문자열들로 IBusLookupTable 을 만든다: `(sa{sv}uubbiavav)`.
 /// `cursor` 는 전체 목록 기준 절대 위치.
-pub fn make_lookup_table(candidates: &[String], cursor: u32) -> Value<'static> {
+pub fn make_lookup_table(candidates: &[String], cursor: u32, page_size: u32) -> Value<'static> {
     let items: Vec<Value<'static>> = candidates
         .iter()
         .map(|c| make_ibus_text(c.clone()))
@@ -32,7 +36,7 @@ pub fn make_lookup_table(candidates: &[String], cursor: u32) -> Value<'static> {
     let s = StructureBuilder::new()
         .add_field("IBusLookupTable".to_string())
         .add_field(HashMap::<String, Value<'static>>::new())
-        .add_field(PAGE_SIZE) // page_size (u)
+        .add_field(page_size) // page_size (u)
         .add_field(cursor) // cursor_pos (u)
         .add_field(true) // cursor_visible (b)
         .add_field(true) // round (b): 엔진의 페이징이 순환(wrap)하므로 패널에도 알린다
@@ -50,14 +54,18 @@ mod tests {
 
     #[test]
     fn lookup_table_signature() {
-        let v = make_lookup_table(&["學 배울 학".to_string(), "鶴 두루미 학".to_string()], 0);
+        let v = make_lookup_table(
+            &["學 배울 학".to_string(), "鶴 두루미 학".to_string()],
+            0,
+            PAGE_SIZE,
+        );
         assert_eq!(v.value_signature().to_string(), "(sa{sv}uubbiavav)");
     }
 
     #[test]
     fn empty_table_signature_holds() {
         // 빈 av 라도 시그니처가 av 로 유지돼야 한다(a(...) 로 새면 데몬 사망, ibus#2611).
-        let v = make_lookup_table(&[], 0);
+        let v = make_lookup_table(&[], 0, EXPANDED_PAGE_SIZE);
         assert_eq!(v.value_signature().to_string(), "(sa{sv}uubbiavav)");
     }
 }
