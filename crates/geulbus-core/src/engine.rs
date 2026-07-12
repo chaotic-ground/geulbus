@@ -209,10 +209,14 @@ impl Engine {
     /// 한글 조합 흐름을 끊는 확정(공백·기호·미배열 글쇠 통과 등)이므로 BkspAttach
     /// 되살리기 스택을 비운다. 확정 글자 뒤에 비-한글 문자가 끼면 그 글자에 다시
     /// "달라붙을" 수 없기 때문(그랬다간 백스페이스가 사이의 공백 대신 글자를 지움).
+    /// 오토마타 상태도 시작 상태로 되돌린다 — flush()/reset() 과 같은 이유: 여기서
+    /// 안 돌리면 다음 글쇠의 값-식이 읽는 T(=auto_state, AutomataTable 있는 항목)가
+    /// 방금 끝난 음절의 상태로 남아 새 조합 시작을 오조합할 수 있다.
     fn commit_and_clear(&mut self) -> String {
         let s = self.commit_current();
         self.history.clear();
         self.prev_syllables.clear();
+        self.auto_state = self.layout.automata_start;
         s
     }
 
@@ -402,7 +406,7 @@ impl Engine {
             if let Some(j) = self.resolve_jamo(u) {
                 // 서열을 모르는 낱자(표 밖 옛한글 등)는 안전하게 휴리스틱으로.
                 if ngs_seq(j.category, j.cp).is_some() {
-                    return self.automaton_feed(j);
+                    return self.automaton_feed(u, j, Self::incoming_role_seq(u, j));
                 }
             }
         }
@@ -524,9 +528,30 @@ impl Engine {
         self.history.push(u);
     }
 
-    /// 빈 음절에 낱자 하나를 넣었을 때의 오토마타 상태(시작 상태에서 평가).
-    fn fresh_state(&self, j: Jamo) -> i64 {
-        let seq = ngs_seq(j.category, j.cp).map(|s| s as i64).unwrap_or(0);
+    /// 가상 단위(§7.3 VirtualUnitTable)가 오토마타 A/B/C 에 내놓는 서열의 밑값. 실제
+    /// 서열표(CHO/JUNG/JONG_SEQ)의 최댓값(200 미만)보다 넉넉히 커서, 가상 단위 id 를
+    /// 더해도 진짜 낱자 서열과 절대 겹치지 않는다. 신세벌식처럼 물리적으로 다른 키가
+    /// 같은 낱자(예: 오른손/왼손 ㅗ)를 서로 다른 가상 단위로 내는 경우, 오토마타가
+    /// `B==1000+<id>` 로 "그 낱자"가 아니라 "그 가상 단위를 거쳐 왔는가"를 구분한다.
+    const VIRTUAL_SEQ_BASE: i64 = 1000;
+
+    /// 오토마타 A/B/C 에 넣을 "들어온 단위의 서열". 가상 단위(`Unit::Virtual`)는 풀린
+    /// 자모의 서열이 아니라 가상 단위 자신의 서열(`VIRTUAL_SEQ_BASE + id`)을 낸다 —
+    /// 풀린 자모(배치에 쓰는 실제 낱자)로는 "어느 가상 단위를 거쳤는지"가 사라지기
+    /// 때문(신세벌식 갈마들이: 같은 ㅗ라도 오른손/왼손 키가 서로 다른 진행 상태로
+    /// 이어져야 한다). 보통 단위는 풀린 자모의 날개셋 서열 그대로.
+    fn incoming_role_seq(u: Unit, resolved: Jamo) -> i64 {
+        match u {
+            Unit::Virtual(id) => Self::VIRTUAL_SEQ_BASE + id as i64,
+            _ => ngs_seq(resolved.category, resolved.cp)
+                .map(|s| s as i64)
+                .unwrap_or(0),
+        }
+    }
+
+    /// 빈 음절에 낱자 하나를 넣었을 때의 오토마타 상태(시작 상태에서 평가). `seq` 는
+    /// `incoming_role_seq` 로 구한, A/B/C 에 넣을 서열(가상 단위면 가상 단위 자신의 서열).
+    fn fresh_state(&self, j: Jamo, seq: i64) -> i64 {
         let (a, b, c) = match j.category {
             Category::Cho => (seq, 0, 0),
             Category::Jung => (0, seq, 0),
@@ -547,9 +572,11 @@ impl Engine {
         }
     }
 
-    /// 한 낱자를 오토마타로 처리한다. 확정 문자열을 돌려준다.
-    fn automaton_feed(&mut self, j: Jamo) -> String {
-        let seq = ngs_seq(j.category, j.cp).map(|s| s as i64).unwrap_or(0);
+    /// 한 낱자를 오토마타로 처리한다. `u` 는 원래 단위(이력 기록용 — 가상 단위면
+    /// `Unit::Virtual` 그대로 남겨야 재생 때도 같은 가상 서열이 나온다), `j` 는 배치에
+    /// 쓸 풀린 자모, `seq` 는 A/B/C 에 넣을 서열(`incoming_role_seq`). 확정 문자열을
+    /// 돌려준다.
+    fn automaton_feed(&mut self, u: Unit, j: Jamo, seq: i64) -> String {
         let (a, b, c) = match j.category {
             Category::Cho => (seq, 0, 0),
             Category::Jung => (0, seq, 0),
@@ -570,30 +597,34 @@ impl Engine {
                 Ok(Value::Int(n)) => n,
                 _ => match st.default.eval(&ctx) {
                     Ok(Value::Int(n)) => n,
-                    _ => return self.feed_jamo_tracked(j),
+                    _ => return self.feed_jamo_tracked(u, j),
                 },
             },
-            None => return self.feed_jamo_tracked(j),
+            None => return self.feed_jamo_tracked(u, j),
         };
-        self.apply_result(r, j)
+        self.apply_result(r, u, j, seq)
     }
 
     /// 오토마타 결과 코드 r 에 따라 낱자를 배치한다(research/ngs-automata-help.txt).
     /// 양수=그 상태로 조합 계속, 0=다음 글자 시작, -1=무시, -2=무한 낱자 수정,
-    /// 그 외 음수=보수적으로 현재 확정 후 새 음절(점진적으로 정교화 예정).
-    fn apply_result(&mut self, r: i64, j: Jamo) -> String {
+    /// 그 외 음수=보수적으로 현재 확정 후 새 음절(점진적으로 정교화 예정). `u` 는
+    /// 이력에 남길 원래 단위 — 배치엔 풀린 자모(`j`)를 쓰지만, 이력은 `u` 그대로
+    /// 남겨야 재생(replay_history) 때도 가상 단위가 같은 가상 서열로 다시 풀린다
+    /// (그렇지 않으면 재생 시 풀린 자모의 진짜 서열로 오토마타를 다시 태우게 되어,
+    /// 가상 단위로만 갈 수 있는 상태 전이가 사라진다 — 백스페이스 등에서 낱자 유실).
+    fn apply_result(&mut self, r: i64, u: Unit, j: Jamo, seq: i64) -> String {
         match r {
             // 조합 계속: 해당 칸에 배치(차 있으면 결합/교체) 후 상태 갱신.
             n if n > 0 => {
                 let replaced = self.put_modify(j);
                 self.auto_state = n;
-                self.record_unit(Unit::Jamo(j), replaced, j.category);
+                self.record_unit(u, replaced, j.category);
                 String::new()
             }
             // 무한 낱자 수정: 현재 음절을 확정하지 않고 칸을 결합/교체. 상태 유지.
             -2 => {
                 let replaced = self.put_modify(j);
-                self.record_unit(Unit::Jamo(j), replaced, j.category);
+                self.record_unit(u, replaced, j.category);
                 String::new()
             }
             // 입력 무시(소비만).
@@ -603,22 +634,23 @@ impl Engine {
                 let commit = self.commit_current();
                 self.history.clear();
                 self.put_modify(j);
-                self.auto_state = self.fresh_state(j);
-                self.history.push(Unit::Jamo(j));
+                self.auto_state = self.fresh_state(j, seq);
+                self.history.push(u);
                 commit
             }
         }
     }
 
-    /// 휴리스틱 feed_jamo + 이력 갱신(오토마타 경로의 폴백용).
-    fn feed_jamo_tracked(&mut self, j: Jamo) -> String {
+    /// 휴리스틱 feed_jamo + 이력 갱신(오토마타 경로의 폴백용). `u` 는 이력에 남길
+    /// 원래 단위(가상 단위는 `Unit::Virtual` 그대로 — apply_result 와 같은 이유).
+    fn feed_jamo_tracked(&mut self, u: Unit, j: Jamo) -> String {
         let out = self.feed_jamo(j);
         if out.is_empty() {
-            self.history.push(Unit::Jamo(j));
+            self.history.push(u);
         } else if self.cur.is_empty() {
             self.history.clear();
         } else {
-            self.history = vec![Unit::Jamo(j)];
+            self.history = vec![u];
         }
         out
     }
@@ -662,7 +694,15 @@ impl Engine {
             }
         };
         let ctx = Ctx {
-            t: self.t_state(),
+            // T = 오토마타 상태. AutomataTable 이 있으면 auto_state 를 그대로 쓴다(날개셋
+            // 도움말의 정의와 일치: 상태 의존 자판은 0/1/2 을 넘는 상태로 "겹모음 진행 중"
+            // 같은 진행 상태를 구분해야 하므로). 표준 설정(상태 id 의미가 t_state() 휴리스틱
+            // 과 같은 0/1/2)에서는 동작이 그대로다. AutomataTable 이 없으면 휴리스틱 유지.
+            t: if self.layout.automata.is_empty() {
+                self.t_state()
+            } else {
+                self.auto_state
+            },
             p: caps as i64,
             // 조합 중 음절의 초/중/종성 서열. 상태 의존 자판(신세벌식 갈마들이 등)이
             // 키 값-식에서 "받침이 이미 있는가"(F) 같은 조건을 쓸 수 있게 한다.
@@ -2451,5 +2491,124 @@ mod tests {
         let out = e.press(b'k', false); // ㅏ → 도깨비불
         assert_eq!(out.commit, "나");
         assert_eq!(out.preedit, "가");
+    }
+
+    // ── T=오토마타 상태, 가상 단위 A/B/C 서열 유지 (신세벌식 갈마들이, #4) ──────────
+    //
+    // 신세벌식은 겹모음 진행("오른손 ㅗ", 여기선 p 키)과 종성 갈마들이 대기("왼손 ㅗ",
+    // 여기선 v 키)를 물리적으로 다른 키로 구분하는데, 둘 다 놓이는 낱자는 똑같이 ㅗ다.
+    // 그래서 오토마타가 "풀린 자모"만 보면 두 진행을 구별할 수 없고, 가상 단위 자신의
+    // 서열(id 200/201)을 봐야 한다. f 키는 T(=오토마타 상태) 에 따라 값이 달라지는
+    // 상태 의존 글쇠(신세벌식의 전형적인 패턴)로, 겹모음 진행 중엔 중성 ㅏ, 종성 대기
+    // 중엔 종성 ㅈ, 이미 완성된 음절(중성이 ㅏ)에 다시 눌리면 종성 ㅅ 로 갈마든다.
+    const SINSEBEOL: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<EditContextSetting version="0x500">
+  <EditorLayer flag="0"><FinalConvTable/></EditorLayer>
+  <InputLayer default="0" current="0">
+    <InputEntry>
+      <InputSchemeSetting object="CBasicInputScheme">
+        <KeyTable name="sinsebeol" flag="0" from="33" to="126">
+          <Key at="0x72" value="H3|G_"/>   <!-- r = ㄱ -->
+          <Key at="0x6B" value="H3|A_"/>   <!-- k = ㅏ(그냥) -->
+          <Key at="0x70" value="H3|0xC80000"/>   <!-- p = 가상단위 200→ㅗ(겹모음 진행) -->
+          <Key at="0x76" value="H3|0xC90000"/>   <!-- v = 가상단위 201→ㅗ(종성 대기) -->
+          <Key at="0x66" value="T==4 ? H3|_J : (T==2 &amp;&amp; E==1) ? H3|_S : H3|A_"/>
+          <Key at="0x7A" value="T ? H3|_J : 0x7A"/>   <!-- z: T 그대로 노출(회귀 테스트용) -->
+        </KeyTable>
+      </InputSchemeSetting>
+      <GeneratorSetting object="CNgsImeEx">
+        <UnitMixTable>
+          <UnitMix unit="JUNG" a="O_" b="A_" to="WA"/>
+        </UnitMixTable>
+        <VirtualUnitTable>
+          <VirtualUnit unit="JUNG" from="200" to="O_"/>
+          <VirtualUnit unit="JUNG" from="201" to="O_"/>
+        </VirtualUnitTable>
+        <AutomataTable default="0">
+          <Automata state="0" value="A==1 ? 1 : -1" default="-1" remark="초기"/>
+          <Automata state="1" value="B==1 ? 2 : B==1200 ? 3 : B==1201 ? 4 : -1" default="-1" remark="초성만"/>
+          <Automata state="2" value="A==1 ? 0 : C==109 ? 2 : -1" default="-1" remark="완성"/>
+          <Automata state="3" value="B==1 ? 2 : -1" default="-1" remark="겹모음(ㅗ) 진행"/>
+          <Automata state="4" value="C==161 ? 2 : -1" default="-1" remark="종성 갈마들이 대기(ㅗ)"/>
+        </AutomataTable>
+      </GeneratorSetting>
+    </InputEntry>
+  </InputLayer>
+</EditContextSetting>"#;
+
+    fn sinsebeol_engine() -> Engine {
+        let cfg = Config::parse(SINSEBEOL).unwrap();
+        Engine::new(cfg.compile(0).unwrap())
+    }
+
+    #[test]
+    fn sinsebeol_plain_syllable() {
+        // ㄱ+ㅏ(그냥) → 가. 상태 의존 글쇠 없이 기본 오토마타 경로가 여전히 맞는지.
+        let mut e = sinsebeol_engine();
+        let (_c, p) = typ(&mut e, "rk");
+        assert_eq!(p, "가");
+    }
+
+    #[test]
+    fn sinsebeol_right_hand_o_forms_compound_vowel() {
+        // 과 = ㄱ + p(가상 200→ㅗ, 겹모음 진행) + f(T==3 이라 중성 ㅏ) → ㅗ+ㅏ=ㅘ.
+        let mut e = sinsebeol_engine();
+        let (_c, p) = typ(&mut e, "rpf");
+        assert_eq!(p, "과");
+    }
+
+    #[test]
+    fn sinsebeol_left_hand_o_becomes_toggle_jong() {
+        // 곶 = ㄱ + v(가상 201→ㅗ, 종성 갈마들이 대기) + f(T==4 이라 종성 ㅈ).
+        // 가상 단위 200/201 이 똑같이 ㅗ로 풀리므로, 이 결과는 오토마타가 "풀린 자모"가
+        // 아니라 가상 단위 자신의 서열을 보고 진행 상태를 구분해야만 나온다.
+        let mut e = sinsebeol_engine();
+        let (_c, p) = typ(&mut e, "rvf");
+        assert_eq!(p, "곶");
+    }
+
+    #[test]
+    fn sinsebeol_same_key_toggles_jong_after_jung() {
+        // 갓 = ㄱ + f(T==1 이라 중성 ㅏ) + f(다시: T==2 && E==1 이라 종성 ㅅ 로 갈마듬).
+        let mut e = sinsebeol_engine();
+        let (_c, p) = typ(&mut e, "rff");
+        assert_eq!(p, "갓");
+    }
+
+    // sinsebeol_left_hand_o_becomes_toggle_jong(곶)가 T=오토마타 상태 수정이 필요함을
+    // 실증한다: 옛 t_state() 휴리스틱은 중성이 있으면 무조건 2를 내므로, v(state 4) 뒤에도
+    // T=2로 뭉개져 f 키의 T==4 분기가 못 갈리고 곶 대신 과와 같은(잘못된) 값을 냈을 것이다
+    // (과는 우연히 T==2/T==3 둘 다 else 분기라 이 수정 없이도 통과함 — 검증 시 직접 되돌려
+    // 확인함).
+
+    #[test]
+    fn sinsebeol_backspace_unwinds_virtual_unit_one_step() {
+        // 이력에 가상 단위 원형(Unit::Virtual)이 아니라 풀린 자모만 남으면, 재생 시
+        // 오토마타가 풀린 자모의 "진짜" 서열(예: ㅗ=21)로 다시 태워져 가상 단위로만 갈
+        // 수 있는 상태 전이(B==1201→4)를 못 찾고 그 낱자를 통째로 잃는다. 곶 완성 후
+        // 백스페이스 한 번은 종성(f→ㅈ)만 한 단계 풀어 고가 돼야 한다(ㄱ으로 통째로
+        // 풀리면 안 됨).
+        let mut e = sinsebeol_engine();
+        typ(&mut e, "rvf"); // 곶
+        assert_eq!(e.preedit(), "곶");
+        let out = e.backspace();
+        assert_eq!(out.preedit, "고");
+    }
+
+    #[test]
+    fn sinsebeol_commit_and_clear_resets_automata_state() {
+        // 공백처럼 KeyTable 에 없는 글쇠는 commit_and_clear 로 조합을 확정·통과시킨다.
+        // 이때 auto_state 도 시작 상태로 되돌아가야, 다음 글쇠의 값-식이 읽는 T 가 방금
+        // 끝난 음절의 상태(예: 완성=2)로 새지 않는다. z 키는 T 를 그대로 노출한다
+        // (T truthy 면 종성 ㅈ, 아니면 리터럴 'z').
+        let mut e = sinsebeol_engine();
+        typ(&mut e, "rk"); // 가(조합 중, 아직 확정 전)
+        let out = e.press(b' ', false); // 공백: 가 확정 + 통과, auto_state 리셋
+        assert_eq!(out.commit, "가 ");
+        let out = e.press(b'z', false);
+        assert_eq!(
+            out.commit, "z",
+            "auto_state 가 안 돌아갔다면 T 가 여전히 참이라 종성 ㅈ 조합으로 잘못 샜을 것"
+        );
     }
 }
