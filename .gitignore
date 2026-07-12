@@ -21,5 +21,7 @@ __pycache__/
 
 # OpenTofu / Terraform
 /.tf/.terraform/
+/.tf/.terraform.tfstate.lock.info
 /.tf/terraform.tfstate
+/.tf/terraform.tfstate.*.backup
 /.tf/terraform.tfstate.backup
