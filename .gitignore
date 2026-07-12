@@ -18,3 +18,8 @@ __pycache__/
 
 # Local editor/agent settings
 .claude/
+
+# OpenTofu / Terraform
+/.tf/.terraform/
+/.tf/terraform.tfstate
+/.tf/terraform.tfstate.backup
