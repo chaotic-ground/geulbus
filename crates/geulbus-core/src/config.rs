@@ -201,6 +201,11 @@ pub struct Layout {
     pub automata_start: i64,
     /// 백스페이스 동작(`<Bksp key="1">` 슬롯). 물리 Backspace 하나에 대응.
     pub bksp: BkspBehavior,
+    /// 두벌식 배치: 자음(초성 낱자)을 문맥에 따라 받침으로 붙이고, 받침 있는 음절 뒤의
+    /// 모음에서 도깨비불(받침의 마지막 자음을 다음 글자 초성으로)을 자동 적용한다.
+    /// 날개셋 XML 에는 대응 요소가 없어 파싱으로는 항상 꺼지며(휴리스틱 경로 전용),
+    /// `Layout` 을 프로그램적으로 구성하는 프런트엔드가 켠다.
+    pub dubeol: bool,
 }
 
 impl Layout {
@@ -316,6 +321,7 @@ impl Config {
             automata,
             automata_start,
             bksp,
+            dubeol: false,
         })
     }
 

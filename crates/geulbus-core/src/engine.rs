@@ -239,6 +239,24 @@ impl Engine {
     // ── 낱자 투입 ────────────────────────────────────────────────────────────
 
     fn feed_cho(&mut self, cp: u32) -> String {
+        // 두벌식: 초성+중성이 갖춰진 음절 뒤의 자음은 받침으로 붙인다(겹받침 결합 포함).
+        // 받침이 될 수 없는 자음(ㄸㅃㅉ)이나 겹받침 규칙이 없으면 아래의 새 음절 초성으로.
+        if self.layout.dubeol && self.cur.cho.is_some() && self.cur.jung.is_some() {
+            if let Some(jcp) = hanmo::cho_to_jong(cp) {
+                match self.cur.jong {
+                    None => {
+                        self.cur.jong = Some(jcp);
+                        return String::new();
+                    }
+                    Some(e) => {
+                        if let Some(r) = self.layout.combine(Category::Jong, e, jcp) {
+                            self.cur.jong = Some(r);
+                            return String::new();
+                        }
+                    }
+                }
+            }
+        }
         if self.cur.is_empty() {
             self.cur.cho = Some(cp);
             return String::new();
@@ -324,6 +342,41 @@ impl Engine {
         }
     }
 
+    /// 두벌식 도깨비불: 이력에서 마지막 자음 단위(두벌식이므로 초성 갈래로 기록됨)를
+    /// 떼어 앞 음절을 재구성·확정하고, 그 자음과 들어온 중성으로 새 음절을 시작한다.
+    /// 겹받침은 마지막 한 타만 넘어간다(앉+ㅏ→안자). 확정 문자열을 돌려준다.
+    fn dubeol_dokkaebi(&mut self, j: Jamo) -> String {
+        let pos = {
+            let layout = &self.layout;
+            self.history
+                .iter()
+                .rposition(|u| Self::unit_cat(layout, u) == Some(Category::Cho))
+        };
+        let (moved, commit) = match pos {
+            Some(p) => {
+                let m = self.history.remove(p);
+                self.replay_history();
+                (Some(m), self.commit_current())
+            }
+            // 이력이 비었으면(외부 조작 등 비정상) 재생 없이 받침만 떼어 통째로 옮긴다.
+            None => {
+                let m = self
+                    .cur
+                    .jong
+                    .take()
+                    .and_then(hanmo::jong_to_cho)
+                    .map(|c| Unit::Jamo(Jamo::new(Category::Cho, c)));
+                (m, self.commit_current())
+            }
+        };
+        self.history.clear();
+        if let Some(m) = moved {
+            let _ = self.feed_unit(m);
+        }
+        let _ = self.feed_unit(Unit::Jamo(j));
+        commit
+    }
+
     fn feed_unit(&mut self, u: Unit) -> String {
         // 오토마타가 정의돼 있으면 낱자(가상단위 포함)는 오토마타 경로로 처리한다.
         // 토글은 양쪽 모두 feed_toggle 로(현재 초성 된소리 전환), 이력만 갱신.
@@ -337,6 +390,25 @@ impl Engine {
                 // 서열을 모르는 낱자(표 밖 옛한글 등)는 안전하게 휴리스틱으로.
                 if ngs_seq(j.category, j.cp).is_some() {
                     return self.automaton_feed(j);
+                }
+            }
+        }
+        // 두벌식 도깨비불: 받침 있는 음절 조합 중 모음이 오면, 받침의 마지막 자음을
+        // 떼어 새 음절의 초성으로 넘긴다(간+ㅏ→가나, 앉+ㅏ→안자). 이력을 직접 다루므로
+        // 아래의 공통 이력 갱신을 거치지 않고 여기서 끝낸다.
+        if self.layout.dubeol {
+            let jamo = match u {
+                Unit::Jamo(j) => Some(j),
+                Unit::Virtual(id) => self.layout.virtual_units.get(&id).copied(),
+                Unit::Toggle => None,
+            };
+            if let Some(j) = jamo {
+                if j.category == Category::Jung
+                    && self.cur.cho.is_some()
+                    && self.cur.jung.is_some()
+                    && self.cur.jong.is_some()
+                {
+                    return self.dubeol_dokkaebi(j);
                 }
             }
         }
@@ -575,6 +647,11 @@ impl Engine {
         let ctx = Ctx {
             t: self.t_state(),
             p: caps as i64,
+            // 조합 중 음절의 초/중/종성 서열. 상태 의존 자판(신세벌식 갈마들이 등)이
+            // 키 값-식에서 "받침이 이미 있는가"(F) 같은 조건을 쓸 수 있게 한다.
+            d: self.slot_seq(Category::Cho),
+            e: self.slot_seq(Category::Jung),
+            f: self.slot_seq(Category::Jong),
             ..Default::default()
         };
         let val = match expr.eval(&ctx) {
@@ -2105,5 +2182,149 @@ mod tests {
             crate::config::BkspUnit::LowestLastKey
         );
         assert!(e.layout().bksp.attach); // BkspAttach 도 켜짐
+    }
+
+    // ── 두벌식(dubeol 플래그) ────────────────────────────────────────────────
+
+    // 두벌식 표준의 일부(자음은 전부 *초성* 낱자로만 배당). 받침 배치와 도깨비불은
+    // Layout.dubeol 이 담당한다. 키 자리는 실제 두벌식 표준과 같다.
+    const DUBEOL: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<EditContextSetting version="0x500">
+  <EditorLayer flag="0"><FinalConvTable/></EditorLayer>
+  <InputLayer default="0" current="0">
+    <InputEntry>
+      <InputSchemeSetting object="CBasicInputScheme">
+        <KeyTable name="dubeol" flag="0" from="33" to="126">
+          <Key at="0x72" value="H3|G_"/>   <!-- r = ㄱ -->
+          <Key at="0x73" value="H3|N_"/>   <!-- s = ㄴ -->
+          <Key at="0x64" value="H3|Q_"/>   <!-- d = ㅇ -->
+          <Key at="0x77" value="H3|J_"/>   <!-- w = ㅈ -->
+          <Key at="0x67" value="H3|H_"/>   <!-- g = ㅎ -->
+          <Key at="0x71" value="H3|B_"/>   <!-- q = ㅂ -->
+          <Key at="0x6B" value="H3|A_"/>   <!-- k = ㅏ -->
+          <Key at="0x6F" value="H3|AE"/>   <!-- o = ㅐ -->
+          <Key at="0x68" value="H3|O_"/>   <!-- h = ㅗ -->
+          <Key at="0x6A" value="H3|EO"/>   <!-- j = ㅓ -->
+        </KeyTable>
+      </InputSchemeSetting>
+      <GeneratorSetting object="CNgsImeEx">
+        <UnitMixTable>
+          <UnitMix unit="JUNG" a="O_" b="A_" to="WA"/>
+          <UnitMix unit="JONG" a="N_" b="J_" to="NJ"/>
+          <UnitMix unit="JONG" a="N_" b="H_" to="NH"/>
+        </UnitMixTable>
+        <VirtualUnitTable/>
+        <AutomataTable default="0"/>
+      </GeneratorSetting>
+    </InputEntry>
+  </InputLayer>
+</EditContextSetting>"#;
+
+    fn dubeol_engine() -> Engine {
+        let cfg = Config::parse(DUBEOL).unwrap();
+        let mut layout = cfg.compile(0).unwrap();
+        layout.dubeol = true;
+        Engine::new(layout)
+    }
+
+    #[test]
+    fn dubeol_consonant_becomes_batchim() {
+        // ㄱㅏㄱ → 각 (자음이 초성 낱자여도 CV 뒤에서는 받침).
+        let mut e = dubeol_engine();
+        let (c, p) = typ(&mut e, "rkr");
+        assert_eq!(c, "");
+        assert_eq!(p, "각");
+    }
+
+    #[test]
+    fn dubeol_dokkaebi_moves_batchim() {
+        // 간 + ㅏ → "가" 확정, 나 조합 (도깨비불).
+        let mut e = dubeol_engine();
+        typ(&mut e, "rks"); // 간
+        assert_eq!(e.preedit(), "간");
+        let out = e.press(b'k', false); // ㅏ
+        assert_eq!(out.commit, "가");
+        assert_eq!(out.preedit, "나");
+    }
+
+    #[test]
+    fn dubeol_dokkaebi_splits_double_jong() {
+        // 앉 + ㅏ → "안" 확정, 자 조합 (겹받침은 마지막 한 타만 이동).
+        let mut e = dubeol_engine();
+        typ(&mut e, "dksw"); // 앉
+        assert_eq!(e.preedit(), "앉");
+        let out = e.press(b'k', false); // ㅏ
+        assert_eq!(out.commit, "안");
+        assert_eq!(out.preedit, "자");
+    }
+
+    #[test]
+    fn dubeol_uncombinable_consonant_starts_new_syllable() {
+        // 간 + ㅂ (ㄴㅂ 겹받침 규칙 없음) → "간" 확정, ㅂ 초성 조합.
+        let mut e = dubeol_engine();
+        typ(&mut e, "rks"); // 간
+        let out = e.press(b'q', false); // ㅂ
+        assert_eq!(out.commit, "간");
+        assert_eq!(out.preedit, "ㅂ");
+    }
+
+    #[test]
+    fn dubeol_lone_vowel_then_consonant() {
+        // ㅏ + ㄱ → "ㅏ" 확정, ㄱ 초성 조합 (초성 없는 음절엔 받침을 붙이지 않음).
+        let mut e = dubeol_engine();
+        let out1 = e.press(b'k', false);
+        assert_eq!(out1.preedit, "ㅏ");
+        let out2 = e.press(b'r', false);
+        assert_eq!(out2.commit, "ㅏ");
+        assert_eq!(out2.preedit, "ㄱ");
+    }
+
+    #[test]
+    fn dubeol_compound_vowel() {
+        // ㄱㅗㅏ → 과 (겹모음은 두벌식에서도 결합).
+        let mut e = dubeol_engine();
+        let (_c, p) = typ(&mut e, "rhk");
+        assert_eq!(p, "과");
+    }
+
+    #[test]
+    fn dubeol_backspace_unwinds_batchim() {
+        // 각 + Bksp → 가 (받침으로 배치된 자음도 낱자 단위로 되돌림).
+        let mut e = dubeol_engine();
+        typ(&mut e, "rkr"); // 각
+        let out = e.backspace();
+        assert_eq!(out.preedit, "가");
+    }
+
+    #[test]
+    fn dubeol_dokkaebi_then_more_typing() {
+        // 도깨비불 뒤에도 조합이 이어진다: 간ㅏㄴ → 가 + 난.
+        let mut e = dubeol_engine();
+        let (c, p) = typ(&mut e, "rksks"); // ㄱㅏㄴㅏㄴ
+        assert_eq!(c, "가");
+        assert_eq!(p, "난");
+    }
+
+    // ── KeyTable 값-식의 D/E/F(조합 중 서열) ─────────────────────────────────
+
+    #[test]
+    fn keytable_expr_sees_def_vars() {
+        // z = "F ? H3|A_ : H3|EO": 받침이 있으면 ㅏ, 없으면 ㅓ.
+        let xml = MINI.replace(
+            r#"<Key at="0x21" value="0x21"/>"#,
+            r#"<Key at="0x21" value="0x21"/><Key at="0x7A" value="F ? H3|A_ : H3|EO"/>"#,
+        );
+        let cfg = Config::parse(&xml).unwrap();
+        let mut e = Engine::new(cfg.compile(0).unwrap());
+        // 빈 상태: F=0 → ㅓ.
+        let out = e.press(b'z', false);
+        assert_eq!(out.preedit, "ㅓ");
+        e.reset();
+        // 간(받침 있음): F>0 → ㅏ. 비-두벌식 휴리스틱이라 간 확정 + 새 홀소리 ㅏ.
+        typ(&mut e, "kfs");
+        assert_eq!(e.preedit(), "간");
+        let out = e.press(b'z', false);
+        assert_eq!(out.commit, "간");
+        assert_eq!(out.preedit, "ㅏ");
     }
 }
