@@ -1,0 +1,36 @@
+name: release
+
+# crates.io Trusted Publishing (GitHub Actions OIDC), 장기 API 토큰 없이 게시.
+#
+# 주의: Trusted Publisher 는 이미 게시된 크레이트에만 등록할 수 있다(RFC 3691).
+# geulbus-core 는 게시되어 있으므로 crates.io 크레이트 설정에서 이 repo
+# (chaotic-ground/geulbus)와 워크플로 파일명(release.yml)을 Trusted Publisher 로
+# 등록하면 v* 태그 푸시(또는 수동 실행)로 게시된다.
+#
+# geulbus(바이너리)는 아직 미게시라 이 워크플로 대상이 아니다. 첫 게시는
+# 로컬에서 `cargo login && cargo publish -p geulbus` 로 수동으로 하고,
+# Trusted Publisher 등록 후 아래 publish 단계에 추가한다.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC 토큰 발급(필수)
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace --all-features
+      - run: cargo publish -p geulbus-core --dry-run
+      - name: crates.io 인증 토큰(OIDC) 교환
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish -p geulbus-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
