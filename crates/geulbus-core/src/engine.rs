@@ -239,24 +239,6 @@ impl Engine {
     // ── 낱자 투입 ────────────────────────────────────────────────────────────
 
     fn feed_cho(&mut self, cp: u32) -> String {
-        // 두벌식: 초성+중성이 갖춰진 음절 뒤의 자음은 받침으로 붙인다(겹받침 결합 포함).
-        // 받침이 될 수 없는 자음(ㄸㅃㅉ)이나 겹받침 규칙이 없으면 아래의 새 음절 초성으로.
-        if self.layout.dubeol && self.cur.cho.is_some() && self.cur.jung.is_some() {
-            if let Some(jcp) = hanmo::cho_to_jong(cp) {
-                match self.cur.jong {
-                    None => {
-                        self.cur.jong = Some(jcp);
-                        return String::new();
-                    }
-                    Some(e) => {
-                        if let Some(r) = self.layout.combine(Category::Jong, e, jcp) {
-                            self.cur.jong = Some(r);
-                            return String::new();
-                        }
-                    }
-                }
-            }
-        }
         if self.cur.is_empty() {
             self.cur.cho = Some(cp);
             return String::new();
@@ -342,20 +324,27 @@ impl Engine {
         }
     }
 
-    /// 두벌식 도깨비불: 이력에서 마지막 자음 단위(두벌식이므로 초성 갈래로 기록됨)를
-    /// 떼어 앞 음절을 재구성·확정하고, 그 자음과 들어온 중성으로 새 음절을 시작한다.
+    /// 두벌식 도깨비불: 이력에서 마지막 종성 단위를 떼어 앞 음절을 재구성·확정하고,
+    /// 그 자음을 초성으로 바꿔 들어온 중성과 함께 새 음절을 시작한다.
     /// 겹받침은 마지막 한 타만 넘어간다(앉+ㅏ→안자). 확정 문자열을 돌려준다.
     fn dubeol_dokkaebi(&mut self, j: Jamo) -> String {
         let pos = {
             let layout = &self.layout;
             self.history
                 .iter()
-                .rposition(|u| Self::unit_cat(layout, u) == Some(Category::Cho))
+                .rposition(|u| Self::unit_cat(layout, u) == Some(Category::Jong))
         };
         let (moved, commit) = match pos {
             Some(p) => {
                 let m = self.history.remove(p);
                 self.replay_history();
+                // 떼어낸 종성 단위를 초성으로 바꿔 새 음절의 초성으로 넘긴다.
+                let m = match m {
+                    Unit::Jamo(jm) => hanmo::jong_to_cho(jm.cp)
+                        .map(|c| Unit::Jamo(Jamo::new(Category::Cho, c)))
+                        .unwrap_or(m),
+                    other => other,
+                };
                 (Some(m), self.commit_current())
             }
             // 이력이 비었으면(외부 조작 등 비정상) 재생 없이 받침만 떼어 통째로 옮긴다.
@@ -377,32 +366,51 @@ impl Engine {
         commit
     }
 
+    /// 두벌식 받침 배치: 초성+중성이 갖춰진 음절 뒤에 오는 자음(원래는 초성 낱자)을
+    /// 받침으로 붙인다(겹받침 결합 포함). 받침으로 놓인 낱자는 이력에도 종성 갈래로
+    /// 직접 기록한다 — 원래 눌린 키의 초성 갈래 그대로 기록하면 도깨비불뿐 아니라
+    /// 0x12 수동 도깨비불, 백스페이스 LowestLastKey/LowestWhole, 특정 낱자 삭제/유지
+    /// (0x2~0x4, 0x15~0x17), 성분 이동(0x8~0xA) 등 종성 갈래로 이력을 뒤지는 기존
+    /// 로직이 받침을 찾지 못하거나 실제 초성과 혼동한다. 받침으로 놓을 수 없으면
+    /// (된소리 초성이거나 겹받침 규칙이 없으면) None 을 돌려줘 호출부가 레거시 경로
+    /// (새 음절 시작)로 넘어가게 한다.
+    fn dubeol_place_batchim(&mut self, cp: u32) -> Option<String> {
+        let jcp = hanmo::cho_to_jong(cp)?;
+        let combined = match self.cur.jong {
+            None => jcp,
+            Some(e) => self.layout.combine(Category::Jong, e, jcp)?,
+        };
+        self.cur.jong = Some(combined);
+        self.history
+            .push(Unit::Jamo(Jamo::new(Category::Jong, jcp)));
+        Some(String::new())
+    }
+
+    /// 단위를 자모로 풀어낸다(가상 단위는 표에서 해석, 토글은 자모가 아니므로 None).
+    fn resolve_jamo(&self, u: Unit) -> Option<Jamo> {
+        match u {
+            Unit::Jamo(j) => Some(j),
+            Unit::Virtual(id) => self.layout.virtual_units.get(&id).copied(),
+            Unit::Toggle => None,
+        }
+    }
+
     fn feed_unit(&mut self, u: Unit) -> String {
         // 오토마타가 정의돼 있으면 낱자(가상단위 포함)는 오토마타 경로로 처리한다.
         // 토글은 양쪽 모두 feed_toggle 로(현재 초성 된소리 전환), 이력만 갱신.
         if !self.layout.automata.is_empty() {
-            let jamo = match u {
-                Unit::Jamo(j) => Some(j),
-                Unit::Virtual(id) => self.layout.virtual_units.get(&id).copied(),
-                Unit::Toggle => None,
-            };
-            if let Some(j) = jamo {
+            if let Some(j) = self.resolve_jamo(u) {
                 // 서열을 모르는 낱자(표 밖 옛한글 등)는 안전하게 휴리스틱으로.
                 if ngs_seq(j.category, j.cp).is_some() {
                     return self.automaton_feed(j);
                 }
             }
         }
-        // 두벌식 도깨비불: 받침 있는 음절 조합 중 모음이 오면, 받침의 마지막 자음을
-        // 떼어 새 음절의 초성으로 넘긴다(간+ㅏ→가나, 앉+ㅏ→안자). 이력을 직접 다루므로
-        // 아래의 공통 이력 갱신을 거치지 않고 여기서 끝낸다.
         if self.layout.dubeol {
-            let jamo = match u {
-                Unit::Jamo(j) => Some(j),
-                Unit::Virtual(id) => self.layout.virtual_units.get(&id).copied(),
-                Unit::Toggle => None,
-            };
-            if let Some(j) = jamo {
+            if let Some(j) = self.resolve_jamo(u) {
+                // 도깨비불: 받침 있는 음절 조합 중 모음이 오면, 받침의 마지막 자음을
+                // 떼어 새 음절의 초성으로 넘긴다(간+ㅏ→가나, 앉+ㅏ→안자). 이력을 직접
+                // 다루므로 아래의 공통 이력 갱신을 거치지 않고 여기서 끝낸다.
                 if j.category == Category::Jung
                     && self.cur.cho.is_some()
                     && self.cur.jung.is_some()
@@ -410,13 +418,22 @@ impl Engine {
                 {
                     return self.dubeol_dokkaebi(j);
                 }
+                // 받침 배치: 초성+중성 갖춘 음절 뒤의 자음(초성 낱자)은 받침으로 붙인다.
+                // 이력을 직접 다루므로(종성 갈래로 기록) 아래의 공통 이력 갱신을 거치지
+                // 않고 여기서 끝낸다. 받침으로 놓을 수 없으면 None → 아래 레거시 경로로.
+                if j.category == Category::Cho && self.cur.cho.is_some() && self.cur.jung.is_some()
+                {
+                    if let Some(out) = self.dubeol_place_batchim(j.cp) {
+                        return out;
+                    }
+                }
             }
         }
         // 레거시(휴리스틱) 경로.
         let out = match u {
             Unit::Jamo(j) => self.feed_jamo(j),
             Unit::Toggle => self.feed_toggle(),
-            Unit::Virtual(id) => match self.layout.virtual_units.get(&id).copied() {
+            Unit::Virtual(_) => match self.resolve_jamo(u) {
                 Some(j) => self.feed_jamo(j),
                 None => String::new(),
             },
@@ -903,6 +920,21 @@ impl Engine {
         self.history = keep;
         self.replay_history();
         let commit = self.commit_current();
+        // 두벌식은 받침 전용 글쇠가 없어(모든 자음이 초성 낱자) 종성으로 놓였던 낱자를
+        // 새 음절로 되돌릴 때도 초성으로 바꿔야 한다(도깨비불과 같은 이유).
+        let moved = if self.layout.dubeol && cat == Category::Jong {
+            moved
+                .into_iter()
+                .map(|u| match u {
+                    Unit::Jamo(j) => hanmo::jong_to_cho(j.cp)
+                        .map(|c| Unit::Jamo(Jamo::new(Category::Cho, c)))
+                        .unwrap_or(u),
+                    other => other,
+                })
+                .collect()
+        } else {
+            moved
+        };
         // 빼낸 성분은 새 음절의 시작이므로 오토마타 상태를 초기화한다(commit_current 는
         // 상태를 보존하므로, 안 하면 '완성' 상태가 남아 다음 글쇠가 곧바로 확정돼 버린다).
         self.commit_then_start_with(commit, moved)
@@ -2227,6 +2259,14 @@ mod tests {
         Engine::new(layout)
     }
 
+    fn dubeol_engine_with_bksp(composing: BkspUnit) -> Engine {
+        let cfg = Config::parse(DUBEOL).unwrap();
+        let mut layout = cfg.compile(0).unwrap();
+        layout.dubeol = true;
+        layout.bksp.composing = composing;
+        Engine::new(layout)
+    }
+
     #[test]
     fn dubeol_consonant_becomes_batchim() {
         // ㄱㅏㄱ → 각 (자음이 초성 낱자여도 CV 뒤에서는 받침).
@@ -2326,5 +2366,90 @@ mod tests {
         let out = e.press(b'z', false);
         assert_eq!(out.commit, "간");
         assert_eq!(out.preedit, "ㅏ");
+    }
+
+    // ── 두벌식 받침이 기존 C0 특수글쇠/백스페이스 모드와 일관되는지 ────────────────
+    //
+    // dubeol_place_batchim 이 받침을 이력에 종성 갈래로 기록하기 전에는, 아래 함수들이
+    // 전부 "받침"을 이력에서 초성으로 기록된 낱자로 착각하거나 찾지 못해 조용히
+    // 무동작하거나 데이터를 잃었다(#3 리뷰에서 재현 확인).
+
+    #[test]
+    fn dubeol_c0_dokkaebi_on_placed_batchim() {
+        // 0x12(수동 도깨비불): 간 → 가 확정 + ㄴ 조합. cmd_dokkaebi 자신의 문서 예시와 동일.
+        let mut e = dubeol_engine();
+        typ(&mut e, "rks"); // 간
+        let out = e.command(0x12);
+        assert_eq!(out.commit, "가");
+        assert_eq!(out.preedit, "ㄴ");
+    }
+
+    #[test]
+    fn dubeol_backspace_lowest_last_key_removes_batchim() {
+        let mut e = dubeol_engine_with_bksp(BkspUnit::LowestLastKey);
+        typ(&mut e, "rkr"); // 각
+        let out = e.backspace();
+        assert_eq!(out.preedit, "가");
+    }
+
+    #[test]
+    fn dubeol_backspace_lowest_whole_removes_batchim() {
+        let mut e = dubeol_engine_with_bksp(BkspUnit::LowestWhole);
+        typ(&mut e, "rkr"); // 각
+        let out = e.backspace();
+        assert_eq!(out.preedit, "가");
+    }
+
+    #[test]
+    fn dubeol_delete_jong_removes_batchim() {
+        // 0x4(종성만 삭제): 각 → 가.
+        let mut e = dubeol_engine();
+        typ(&mut e, "rkr"); // 각
+        let out = e.command(0x4);
+        assert_eq!(out.preedit, "가");
+    }
+
+    #[test]
+    fn dubeol_delete_cho_keeps_batchim() {
+        // 0x2(초성만 삭제): 받침 ㄱ은 종성 갈래이므로 남아야 한다(진짜 초성 ㄱ만 삭제).
+        let mut e = dubeol_engine();
+        typ(&mut e, "rkr"); // 각
+        let out = e.command(0x2);
+        assert_ne!(out.preedit, "ㅏ", "받침까지 함께 삭제되면 안 된다");
+    }
+
+    #[test]
+    fn dubeol_move_cho_back_keeps_only_real_cho() {
+        // 0x8(초성을 다음 글자로): 받침(종성 갈래)은 함께 딸려가면 안 된다.
+        let mut e = dubeol_engine();
+        typ(&mut e, "rks"); // 간
+        let out = e.command(0x8);
+        assert_eq!(
+            out.preedit, "ㄱ",
+            "떼어낸 성분은 진짜 초성 ㄱ 하나여야 한다"
+        );
+    }
+
+    #[test]
+    fn dubeol_move_jong_back_promotes_to_cho() {
+        // 0xA(종성을 다음 글자로): 간 → 가 확정 + 받침이 초성으로 바뀌어 조합.
+        let mut e = dubeol_engine();
+        typ(&mut e, "rks"); // 간
+        let out = e.command(0xA);
+        assert_eq!(out.commit, "가");
+        assert_eq!(out.preedit, "ㄴ");
+    }
+
+    #[test]
+    fn dubeol_swap_cho_jong_then_dokkaebi_no_corruption() {
+        // 0x18(초·종성 맞바꾸기)로 만든 진짜 종성 낱자와, 두벌식 받침 배치로 놓인
+        // 종성 낱자가 이력에서 구분 없이 똑같이 동작해야 한다(글자 유실 없이).
+        let mut e = dubeol_engine();
+        typ(&mut e, "rks"); // 간 (받침 ㄴ은 두벌식 배치)
+        let swapped = e.command(0x18); // 낙 (초성 ㄴ, 종성 ㄱ은 0x18 이 직접 놓음)
+        assert_eq!(swapped.preedit, "낙");
+        let out = e.press(b'k', false); // ㅏ → 도깨비불
+        assert_eq!(out.commit, "나");
+        assert_eq!(out.preedit, "가");
     }
 }
