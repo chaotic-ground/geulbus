@@ -8,8 +8,11 @@ name: release
 # 등록하면 v* 태그 푸시(또는 수동 실행)로 게시된다.
 #
 # release-please.yaml 이 main 에 release-PR 을 만들고 merge 되면 GitHub Release/
-# 태그를 만든다. release-please 가 만든 태그가 push 이벤트를 안정적으로 발생시키지
-# 않는 경우가 있어(알려진 함정), release: published 도 트리거에 같이 둔다.
+# 태그를 만들고, 이 워크플로를 workflow_dispatch 로 명시적으로 깨운다(release-please
+# 가 기본 GITHUB_TOKEN 으로 만든 태그/릴리스는 GitHub 재귀 방지 가드 때문에 아래
+# release/push 트리거를 못 깨우는 경우가 있어, workflow_dispatch 가 실질적인 경로다 —
+# release: published·push: tags 는 PAT/App 토큰으로 바뀌거나 사람이 태그를 직접
+# 미는 경우를 위한 최선-노력 폴백으로 남겨둔다).
 #
 # geulbus(바이너리)는 아직 미게시라 이 워크플로 대상이 아니다. 첫 게시는
 # 로컬에서 `cargo login && cargo publish -p geulbus` 로 수동으로 하고,

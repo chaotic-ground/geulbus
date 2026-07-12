@@ -11,5 +11,19 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write # release.yml 을 workflow_dispatch 로 대신 깨우기 위해(아래 참고)
     steps:
       - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        id: release
+
+      # release-please 는 기본 GITHUB_TOKEN 으로 태그·릴리스를 만드는데, GITHUB_TOKEN 이
+      # 낸 이벤트는 다른 워크플로의 push/release 트리거를 깨우지 않는다(무한 재귀 방지
+      # 가드; workflow_dispatch/repository_dispatch 만 예외). release.yml 은 crates.io
+      # Trusted Publisher 등록이 워크플로 파일명(release.yml)에 걸려 있어 그 워크플로가
+      # 직접 실행돼야 OIDC 게시가 통하므로, job 을 합치는 대신 workflow_dispatch 로
+      # 명시적으로 깨운다.
+      - name: crates.io 게시 워크플로(release.yml) 실행 요청
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --ref main
