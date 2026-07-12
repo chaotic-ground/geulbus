@@ -171,7 +171,10 @@ cargo run -p geulbus --example drive -- "kf kfhf"   # → "가가나"
 
 ## 라이선스
 
-이 저장소는 **공개(public)되어 있으나 오픈소스가 아닙니다.** 자세한 내용은
-[`LICENSE`](./LICENSE)를 참고하세요. 요지: 모든 권리 보유(All rights reserved),
-저작권자의 사전 허가 없이는 사용·복제·수정·배포할 수 없습니다. 라이선스는 추후
-확정될 수 있습니다.
+다음 두 라이선스 중 원하는 쪽을 선택해 사용할 수 있습니다.
+
+- MIT ([LICENSE-MIT](./LICENSE-MIT))
+- Apache License 2.0 ([LICENSE-APACHE](./LICENSE-APACHE))
+
+명시적으로 달리 밝히지 않는 한, 이 저장소에 제출된 기여물은 위 두 라이선스로
+제공되는 것에 동의한 것으로 간주합니다.

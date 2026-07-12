@@ -8,7 +8,7 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-license = "LicenseRef-AllRightsReserved"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/chaotic-ground/geulbus"
 authors = ["lens0021 <lorentz0021@gmail.com>"]
 
