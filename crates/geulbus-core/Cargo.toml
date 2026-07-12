@@ -7,6 +7,15 @@ edition.workspace = true
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 authors.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/geulbus-core"
+homepage = "https://github.com/chaotic-ground/geulbus"
+keywords = ["hangul", "ime", "korean", "input-method", "nalgaeset"]
+categories = ["internationalization", "text-processing", "parser-implementations"]
+# 하한은 의존성 hanmo 의 MSRV
+rust-version = "1.70"
+# tests/schema.rs 는 저장소 루트 schema/ 의 XSD 를 읽으므로 배포본에서는 실행 불가
+exclude = ["tests/schema.rs"]
 
 [dependencies]
 hanmo = "0.1"

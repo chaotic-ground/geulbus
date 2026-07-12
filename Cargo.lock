@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "geulbus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "geulbus-core",
@@ -244,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "geulbus-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hanmo",
  "quick-xml",
